@@ -514,7 +514,95 @@ async function loadFromUrlParam(): Promise<void> {
   }
 }
 
-initialize();
+initialize().then(() => {
+  // ── Electron 통합 ──────────────────────────────────────────────────────────
+  // Electron 환경에서만 실행. window.electronAPI는 preload/preload.ts가 노출.
+  const electronAPI = (window as any).electronAPI;
+  if (!electronAPI) return;
+
+  // 내부 API 노출 (개발 도구 및 테스트 접근용)
+  (window as any).__rhwpInternals = { wasm, registry, dispatcher, initializeDocument };
+
+  // file:open → 네이티브 파일 열기 대화상자
+  registry.register({
+    id: 'file:open',
+    label: '열기',
+    async execute() {
+      const result = await electronAPI.openFile();
+      if (!result) return;
+      const data = new Uint8Array(result.data);
+      const docInfo = wasm.loadDocument(data, result.fileName);
+      await initializeDocument(docInfo, `${result.fileName} — ${(docInfo as any).pageCount}페이지`);
+      electronAPI.setTitle(`${result.fileName} — rhwp-studio`);
+    },
+  });
+
+  // file:save → 알려진 경로에 저장 (새 문서면 save-as로 위임)
+  registry.register({
+    id: 'file:save',
+    label: '저장',
+    icon: 'icon-save',
+    shortcutLabel: 'Ctrl+S',
+    canExecute: (ctx: any) => ctx.hasDocument,
+    async execute() {
+      if (wasm.isNewDocument) {
+        dispatcher.dispatch('file:save-as');
+        return;
+      }
+      const bytes = wasm.exportHwp();
+      await electronAPI.saveFile(wasm.fileName, bytes);
+    },
+  });
+
+  // file:save-as → 네이티브 다른 이름으로 저장 대화상자
+  registry.register({
+    id: 'file:save-as',
+    label: '다른 이름으로 저장',
+    shortcutLabel: 'Ctrl+Shift+S',
+    canExecute: (ctx: any) => ctx.hasDocument,
+    async execute() {
+      const bytes = wasm.exportHwp();
+      const result = await electronAPI.saveFileAs(wasm.fileName, bytes);
+      if (!result) return;
+      wasm.fileName = result.fileName;
+      electronAPI.setTitle(`${result.fileName} — rhwp-studio`);
+    },
+  });
+
+  // 네이티브 메뉴 커맨드 수신 → 커맨드 디스패처로 전달
+  electronAPI.onMenuCommand((commandId: string) => {
+    dispatcher.dispatch(commandId);
+  });
+
+  // 최근 파일 / OS open-file 이벤트로 파일 열기
+  electronAPI.onOpenFilePath(async (filePath: string) => {
+    try {
+      const result = await electronAPI.readFile(filePath);
+      const data = new Uint8Array(result.data);
+      const docInfo = wasm.loadDocument(data, result.fileName);
+      await initializeDocument(docInfo, `${result.fileName} — ${(docInfo as any).pageCount}페이지`);
+      electronAPI.setTitle(`${result.fileName} — rhwp-studio`);
+    } catch (err) {
+      console.error('[electron] open-file-path:', err);
+    }
+  });
+
+  // 시작 시 CLI 인수로 전달된 파일 열기
+  electronAPI.getFileToOpen().then(async (filePath: string | null) => {
+    if (!filePath) return;
+    try {
+      const result = await electronAPI.readFile(filePath);
+      const data = new Uint8Array(result.data);
+      const docInfo = wasm.loadDocument(data, result.fileName);
+      await initializeDocument(docInfo, `${result.fileName} — ${(docInfo as any).pageCount}페이지`);
+      electronAPI.setTitle(`${result.fileName} — rhwp-studio`);
+    } catch (err) {
+      console.error('[electron] startup file:', err);
+    }
+  });
+
+  console.log('[rhwp-studio] Electron 통합 완료');
+});
 
 // ── iframe 연동 API (postMessage) ──
 // 부모 페이지에서 postMessage로 에디터를 제어할 수 있다.

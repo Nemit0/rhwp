@@ -5,6 +5,8 @@ import { readFileSync } from 'fs';
 const pkg = JSON.parse(readFileSync(resolve(__dirname, 'package.json'), 'utf-8'));
 
 export default defineConfig({
+  // base: './' enables relative asset paths, required for Electron's app:// protocol
+  base: './',
   define: {
     __APP_VERSION__: JSON.stringify(pkg.version),
   },
