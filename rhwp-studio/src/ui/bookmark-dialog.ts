@@ -5,6 +5,7 @@
  */
 import type { CommandServices } from '@/command/types';
 import type { BookmarkInfo } from '@/core/types';
+import { enableDialogDrag } from './dialog-drag';
 
 type SortMode = 'name' | 'position';
 
@@ -77,6 +78,7 @@ export class BookmarkDialog {
     closeBtn.addEventListener('click', () => this.hide());
     titleBar.appendChild(closeBtn);
     this.dialog.appendChild(titleBar);
+    enableDialogDrag(this.dialog, titleBar);
 
     // 본문
     const body = document.createElement('div');
@@ -195,9 +197,6 @@ export class BookmarkDialog {
 
     this.dialog.appendChild(body);
     this.overlay.appendChild(this.dialog);
-    this.overlay.addEventListener('click', (e) => {
-      if (e.target === this.overlay) this.hide();
-    });
   }
 
   private createButton(text: string, handler: () => void): HTMLButtonElement {
@@ -217,7 +216,7 @@ export class BookmarkDialog {
     }
     // position은 이미 문서 순서대로 반환됨
 
-    this.listEl.innerHTML = '';
+    this.listEl.replaceChildren();
     this.selectedIdx = -1;
 
     if (this.bookmarks.length === 0) {

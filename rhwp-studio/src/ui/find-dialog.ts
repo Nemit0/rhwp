@@ -1,5 +1,5 @@
 import type { CommandServices } from '@/command/types';
-import type { SearchResult } from '@/core/types';
+import type { SearchResult, ReplaceResult, ReplaceAllResult } from '@/core/types';
 
 export type FindMode = 'find' | 'replace';
 
@@ -24,6 +24,7 @@ export class FindDialog {
   private replaceButtonRow!: HTMLDivElement;
   private statusLabel!: HTMLSpanElement;
   private titleLabel!: HTMLSpanElement;
+  private keyCaptureHandler: ((e: KeyboardEvent) => void) | null = null;
 
   /** 현재 검색 결과 (바꾸기 시 위치 참조용) */
   private currentHit: SearchResult | null = null;
@@ -43,11 +44,13 @@ export class FindDialog {
     this.queryInput.value = FindDialog.lastQuery;
     this.caseSensitiveCheck.checked = FindDialog.lastCaseSensitive;
     this.applyMode();
+    this.installKeyCaptureHandler();
     this.focusInput();
   }
 
   hide(): void {
     this._open = false;
+    this.removeKeyCaptureHandler();
     this.wrap?.remove();
   }
 
@@ -100,16 +103,7 @@ export class FindDialog {
     this.queryInput = document.createElement('input');
     this.queryInput.type = 'text';
     this.queryInput.className = 'find-dialog-input';
-    this.queryInput.addEventListener('keydown', (e) => {
-      if (e.key === 'Enter') {
-        e.preventDefault();
-        this.doSearch(!e.shiftKey);
-      } else if (e.key === 'Escape') {
-        e.preventDefault();
-        this.hide();
-      }
-      e.stopPropagation();
-    });
+    this.queryInput.addEventListener('keydown', (e) => e.stopPropagation());
     this.queryInput.addEventListener('keyup', (e) => e.stopPropagation());
     this.queryInput.addEventListener('keypress', (e) => e.stopPropagation());
     findRow.appendChild(findLabel);
@@ -125,16 +119,7 @@ export class FindDialog {
     this.replaceInput = document.createElement('input');
     this.replaceInput.type = 'text';
     this.replaceInput.className = 'find-dialog-input';
-    this.replaceInput.addEventListener('keydown', (e) => {
-      if (e.key === 'Enter') {
-        e.preventDefault();
-        this.doReplace();
-      } else if (e.key === 'Escape') {
-        e.preventDefault();
-        this.hide();
-      }
-      e.stopPropagation();
-    });
+    this.replaceInput.addEventListener('keydown', (e) => e.stopPropagation());
     this.replaceInput.addEventListener('keyup', (e) => e.stopPropagation());
     this.replaceInput.addEventListener('keypress', (e) => e.stopPropagation());
     this.replaceRow.appendChild(replaceLabel);
@@ -189,6 +174,48 @@ export class FindDialog {
     btn.textContent = text;
     btn.addEventListener('click', handler);
     return btn;
+  }
+
+  private installKeyCaptureHandler(): void {
+    if (this.keyCaptureHandler) return;
+    this.keyCaptureHandler = (e: KeyboardEvent) => {
+      if (!this._open) return;
+      const target = e.target as Node | null;
+      const isInDialog = Boolean(target && this.wrap.contains(target));
+
+      if (e.key === 'Escape') {
+        e.preventDefault();
+        e.stopPropagation();
+        this.hide();
+        return;
+      }
+
+      if (this.isFindEnter(e)) {
+        e.preventDefault();
+        e.stopPropagation();
+        if (target === this.replaceInput && !e.shiftKey) this.doReplace();
+        else this.doSearch(!e.shiftKey);
+        this.focusInput();
+        return;
+      }
+
+      if (isInDialog) e.stopPropagation();
+    };
+    document.addEventListener('keydown', this.keyCaptureHandler, true);
+  }
+
+  private removeKeyCaptureHandler(): void {
+    if (!this.keyCaptureHandler) return;
+    document.removeEventListener('keydown', this.keyCaptureHandler, true);
+    this.keyCaptureHandler = null;
+  }
+
+  private isFindEnter(e: KeyboardEvent): boolean {
+    return e.key === 'Enter'
+      && !e.altKey
+      && !e.ctrlKey
+      && !e.metaKey
+      && !e.isComposing;
   }
 
   private applyMode(): void {
@@ -283,12 +310,26 @@ export class FindDialog {
     const newText = this.replaceInput.value;
     const hit = this.currentHit;
 
-    const result = this.services.wasm.replaceText(
-      hit.sec!, hit.para!, hit.charOffset!, hit.length!, newText,
-    );
+    // 텍스트 치환도 undo 대상 — 편집 라우터의 snapshot 명령으로 기록한다
+    // (#1320 계약, pasteImage/objectProps 와 동일 패턴). services 미주입
+    // 환경에서만 직접 적용 fallback.
+    let result: ReplaceResult = { ok: false };
+    const ih = this.services.getInputHandler();
+    if (ih) {
+      ih.executeOperation({ kind: 'snapshot', operationType: 'replaceText', operation: (wasm) => {
+        result = wasm.replaceText(
+          hit.sec!, hit.para!, hit.charOffset!, hit.length!, newText,
+        );
+        return ih.getCursorPosition();
+      }});
+    } else {
+      result = this.services.wasm.replaceText(
+        hit.sec!, hit.para!, hit.charOffset!, hit.length!, newText,
+      );
+      this.services.eventBus.emit('document-changed');
+    }
 
     if (result.ok) {
-      this.services.eventBus.emit('document-changed');
       // 바꾼 뒤 다음 검색
       this.currentHit = null;
       this.doSearch(true);
@@ -300,12 +341,24 @@ export class FindDialog {
     if (!query) return;
 
     const newText = this.replaceInput.value;
-    const result = this.services.wasm.replaceAll(
-      query, newText, this.caseSensitiveCheck.checked,
-    );
+
+    // 모두 바꾸기는 문서 전역 치환 — snapshot 으로 기록해야 Ctrl+Z 로
+    // 한 번에 되돌릴 수 있다.
+    let result: ReplaceAllResult = { ok: false };
+    const ih = this.services.getInputHandler();
+    if (ih) {
+      ih.executeOperation({ kind: 'snapshot', operationType: 'replaceAll', operation: (wasm) => {
+        result = wasm.replaceAll(query, newText, this.caseSensitiveCheck.checked);
+        return ih.getCursorPosition();
+      }});
+    } else {
+      result = this.services.wasm.replaceAll(
+        query, newText, this.caseSensitiveCheck.checked,
+      );
+      this.services.eventBus.emit('document-changed');
+    }
 
     if (result.ok) {
-      this.services.eventBus.emit('document-changed');
       this.statusLabel.textContent = `${result.count}개 바꿈`;
       this.currentHit = null;
     }

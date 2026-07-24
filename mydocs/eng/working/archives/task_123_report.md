@@ -40,8 +40,8 @@ Replace CSS `transform: scale()` raster zoom with Canvas 2D `ctx.scale()` vector
 - Attempted `Math.max(2, dpr)` minimum 2x supersampling → browser downscale interpolation caused text blur
 - Final: `renderScale = zoom x dpr` (1:1 physical pixel matching without interpolation)
 
-### Hancom/Polaris Comparison Analysis
-- Hancom/Polaris: Glyph outline vector rendering (no fillText)
+### Hancom and Other Commercial Products Comparison Analysis
+- Hancom and other commercial products: Glyph outline vector rendering (no fillText)
 - Google Docs: Canvas-based (switched DOM→Canvas in 2021)
 - PDF.js: Glyph path rendering for quality improvement
 - Conclusion: Canvas 2D `fillText()` grayscale AA limitation → to be resolved with glyph path rendering in next task
@@ -74,10 +74,10 @@ Replace CSS `transform: scale()` raster zoom with Canvas 2D `ctx.scale()` vector
 | 300% zoom rendering | Crisp (physical pixel 1:1) |
 | Hybrid zoom operation | Immediate CSS → 150ms vector |
 | Mouse coordinate conversion | Accurate |
-| Max zoom 300% | Same limitation as Hancom/Polaris |
+| Max zoom 300% | Same limitation as Hancom and other commercial products |
 
 ## 7. Future Tasks
 
-- **Glyph path rendering** (next task): `fillText()` → direct font glyph outline rendering to achieve Hancom/Polaris-level text quality
+- **Glyph path rendering** (next task): `fillText()` → direct font glyph outline rendering to achieve text quality on par with Hancom and other commercial products
 - Rust `ttf-parser` + Canvas `beginPath/bezierCurveTo/fill` approach
 - Representative Korean font bundle (HCR Batang, etc.)

@@ -6,13 +6,27 @@
  */
 import { ModalDialog } from './dialog';
 
-/** 외부 크레이트 라이선스 정보 */
+/**
+ * 외부 크레이트 라이선스 정보.
+ *
+ * WASM 번들에 실제 포함되는 핵심 Rust 크레이트만 표시한다.
+ * native-skia(skia-safe/resvg/usvg) 등 optional feature 전용 크레이트는 WASM 빌드에
+ * 포함되지 않으므로 제외한다. 전체 목록은 저장소 루트 THIRD_PARTY_LICENSES.md 참조.
+ */
 const THIRD_PARTY_LICENSES = [
   { name: 'wasm-bindgen', license: 'MIT / Apache-2.0' },
   { name: 'web-sys', license: 'MIT / Apache-2.0' },
   { name: 'js-sys', license: 'MIT / Apache-2.0' },
+  { name: 'quick-xml', license: 'MIT' },
   { name: 'cfb', license: 'MIT' },
+  { name: 'zip', license: 'MIT' },
   { name: 'flate2', license: 'MIT / Apache-2.0' },
+  { name: 'encoding_rs', license: '(Apache-2.0 / MIT) AND BSD-3-Clause' },
+  { name: 'image', license: 'MIT / Apache-2.0' },
+  { name: 'serde / serde_json', license: 'MIT / Apache-2.0' },
+  { name: 'unicode-segmentation', license: 'MIT / Apache-2.0' },
+  { name: 'ttf-parser', license: 'MIT / Apache-2.0' },
+  { name: 'subsetter', license: 'MIT / Apache-2.0' },
   { name: 'byteorder', license: 'MIT / Unlicense' },
   { name: 'base64', license: 'MIT / Apache-2.0' },
   { name: 'console_error_panic_hook', license: 'MIT / Apache-2.0' },
@@ -30,13 +44,13 @@ export class AboutDialog extends ModalDialog {
     // 제품 영문명
     const titleEn = document.createElement('div');
     titleEn.className = 'about-product-name';
-    titleEn.textContent = 'HWP 5.0 Compatible Module for Rust';
+    titleEn.textContent = 'HWP/HWPX Compatible Module for Rust';
     body.appendChild(titleEn);
 
     // 제품 한글명
     const titleKo = document.createElement('div');
     titleKo.className = 'about-product-name-ko';
-    titleKo.textContent = '한글 문서 호환 저장 도구';
+    titleKo.textContent = 'HWP 오픈소스 편집';
     body.appendChild(titleKo);
 
     // 버전
@@ -78,10 +92,17 @@ export class AboutDialog extends ModalDialog {
     }
     body.appendChild(licenseTable);
 
+    // 전체 라이선스 목록 안내
+    const licenseNote = document.createElement('div');
+    licenseNote.className = 'about-license-note';
+    licenseNote.textContent =
+      'WASM 번들에 포함되는 핵심 크레이트만 표시합니다. 전체 목록은 THIRD_PARTY_LICENSES.md를 참조하세요.';
+    body.appendChild(licenseNote);
+
     // 저작권
     const copyright = document.createElement('div');
     copyright.className = 'about-copyright';
-    copyright.textContent = '\u00A9 2026';
+    copyright.textContent = '\u00A9 2026 rhwp: Edward Kim';
     body.appendChild(copyright);
 
     return body;
@@ -96,7 +117,7 @@ export class AboutDialog extends ModalDialog {
     // footer를 "닫기" 버튼 하나로 교체
     const footer = this.dialog.querySelector('.dialog-footer');
     if (footer) {
-      footer.innerHTML = '';
+      footer.replaceChildren();
       const closeBtn = document.createElement('button');
       closeBtn.className = 'dialog-btn dialog-btn-primary';
       closeBtn.textContent = '닫기';

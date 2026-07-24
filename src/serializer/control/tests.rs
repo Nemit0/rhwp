@@ -313,6 +313,9 @@ fn test_roundtrip_footnote() {
             }],
             ..Default::default()
         }],
+        // [Task #1050] CTRL_FOOTNOTE 한컴 default
+        after_decoration_letter: 0x0029,
+        ..Default::default()
     };
 
     let para = Paragraph {
@@ -397,4 +400,138 @@ fn test_roundtrip_header() {
     } else {
         panic!("Expected Header control");
     }
+}
+
+/// 그룹 내 Picture 자식 라운드트립 (#428 후속)
+#[test]
+fn test_roundtrip_group_picture_child() {
+    use crate::model::image::Picture;
+    use crate::model::shape::{CommonObjAttr, GroupShape, ShapeComponentAttr, ShapeObject};
+
+    let pic = Picture {
+        common: CommonObjAttr::default(),
+        shape_attr: ShapeComponentAttr {
+            group_level: 1,
+            original_width: 5000,
+            original_height: 3000,
+            current_width: 5000,
+            current_height: 3000,
+            ..Default::default()
+        },
+        image_attr: crate::model::image::ImageAttr {
+            bin_data_id: 7,
+            ..Default::default()
+        },
+        ..Default::default()
+    };
+
+    let group = GroupShape {
+        common: CommonObjAttr {
+            width: 10000,
+            height: 8000,
+            ..Default::default()
+        },
+        shape_attr: ShapeComponentAttr {
+            original_width: 10000,
+            original_height: 8000,
+            current_width: 10000,
+            current_height: 8000,
+            ..Default::default()
+        },
+        children: vec![ShapeObject::Picture(Box::new(pic))],
+        caption: None,
+    };
+
+    let para = Paragraph {
+        char_count: 2,
+        text: "".to_string(),
+        char_offsets: vec![],
+        controls: vec![Control::Shape(Box::new(ShapeObject::Group(group)))],
+        ..Default::default()
+    };
+
+    let section = Section {
+        paragraphs: vec![para],
+        raw_stream: None,
+        ..Default::default()
+    };
+
+    let bytes = serialize_section(&section);
+    let parsed = parse_body_text_section(&bytes).unwrap();
+
+    assert_eq!(parsed.paragraphs.len(), 1);
+    let ctrl = &parsed.paragraphs[0].controls[0];
+    if let Control::Shape(shape) = ctrl {
+        if let ShapeObject::Group(g) = shape.as_ref() {
+            assert_eq!(g.children.len(), 1, "Group should have 1 child");
+            if let ShapeObject::Picture(p) = &g.children[0] {
+                assert_eq!(
+                    p.image_attr.bin_data_id, 7,
+                    "bin_data_id should survive roundtrip"
+                );
+                assert_eq!(p.shape_attr.original_width, 5000);
+                assert_eq!(p.shape_attr.original_height, 3000);
+            } else {
+                panic!("Expected Picture child, got {:?}", g.children[0]);
+            }
+        } else {
+            panic!("Expected Group shape");
+        }
+    } else {
+        panic!("Expected Shape control");
+    }
+}
+
+#[test]
+fn issue1452_picture_transparency_updates_hwp_extra_byte() {
+    let mut pic = Picture::default();
+    pic.crop.right = 1000;
+    pic.crop.bottom = 500;
+    pic.image_attr.transparency = 50;
+
+    let bytes = serialize_picture_data(&pic);
+    assert_eq!(
+        bytes.last().copied(),
+        Some(127),
+        "HWP 그림 추가 속성의 마지막 alpha byte는 50% 투명도에서 127이어야 한다"
+    );
+
+    pic.raw_picture_extra = vec![0; 18];
+    pic.image_attr.transparency = 100;
+    let bytes = serialize_picture_data(&pic);
+    assert_eq!(
+        bytes.last().copied(),
+        Some(255),
+        "원본 raw_picture_extra가 있어도 마지막 alpha byte는 현재 투명도와 동기화되어야 한다"
+    );
+}
+
+/// [#1808] 셀 field_name 이 raw_list_extra 한컴 계약 레이아웃으로 기록되고
+/// 파서 추출(parse_cell_field_name)과 대칭인지 검증.
+#[test]
+fn test_cell_field_name_extra_roundtrip() {
+    let cell = crate::model::table::Cell {
+        width: 23984,
+        field_name: Some("발신명의".to_string()),
+        ..Default::default()
+    };
+    let extra = build_cell_list_extra(&cell);
+    // 레이아웃: width(4) + 마커(8) + 40 01 00(3) + name_len(2) + UTF-16LE(2n) + 0×8
+    let n = "발신명의".encode_utf16().count();
+    assert_eq!(extra.len(), 25 + n * 2);
+    assert_eq!(&extra[0..4], &23984u32.to_le_bytes());
+    assert_eq!(&extra[4..8], &[0xff, 0x1b, 0x02, 0x01]);
+    assert_eq!(
+        crate::parser::control::parse_cell_field_name(&extra).as_deref(),
+        Some("발신명의")
+    );
+
+    // 필드 없는 셀은 기존 13바이트 default 유지
+    let plain = crate::model::table::Cell {
+        width: 100,
+        ..Default::default()
+    };
+    let extra = build_cell_list_extra(&plain);
+    assert_eq!(extra.len(), 13);
+    assert_eq!(crate::parser::control::parse_cell_field_name(&extra), None);
 }

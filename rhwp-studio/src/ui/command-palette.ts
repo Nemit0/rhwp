@@ -1,6 +1,7 @@
 import type { CommandRegistry } from '@/command/registry';
 import type { CommandDispatcher } from '@/command/dispatcher';
 import type { CommandDef } from '@/command/types';
+import { formatShortcutLabel } from '@/engine/navigation-keymap';
 
 /**
  * `/` 커맨드 팔레트
@@ -134,10 +135,11 @@ export class CommandPalette {
       // canExecute가 항상 false인 stub는 제외
       if (def.canExecute) {
         const ctx = {
-          hasDocument: false, hasSelection: false, inTable: false,
-          inCellSelectionMode: false, inTableObjectSelection: false,
+          hasDocument: false, hasSelection: false, hasCopiedFormat: false, inTable: false,
+          inCellSelectionMode: false, hasMultiCellSelection: false, hasTableTransposeClipboard: false, inTableObjectSelection: false,
           inPictureObjectSelection: false, inField: false, isEditable: true,
-          canUndo: false, canRedo: false, zoom: 1.0, showControlCodes: false,
+          editMode: 'normal' as const, isFormMode: false, canEditFormField: false,
+          canUndo: false, canRedo: false, zoom: 1.0, showControlCodes: false, showParagraphMarks: false,
         };
         // canExecute(ctx=hasDocument:false) → false 인 경우도 목록에는 포함
         // (실행 시점에 dispatcher가 다시 판단)
@@ -154,14 +156,14 @@ export class CommandPalette {
     return this.items.filter(def => {
       if (def.label.toLowerCase().includes(q)) return true;
       if (def.id.toLowerCase().includes(q)) return true;
-      if (def.shortcutLabel?.toLowerCase().includes(q)) return true;
+      if (def.shortcutLabel && (def.shortcutLabel.toLowerCase().includes(q) || formatShortcutLabel(def.shortcutLabel).toLowerCase().includes(q))) return true;
       return false;
     });
   }
 
   private renderList(filtered: CommandDef[]): void {
     if (!this.list) return;
-    this.list.innerHTML = '';
+    this.list.replaceChildren();
 
     if (filtered.length === 0) {
       const empty = document.createElement('div');
@@ -185,7 +187,7 @@ export class CommandPalette {
       if (def.shortcutLabel) {
         const kbd = document.createElement('span');
         kbd.className = 'cp-item-shortcut';
-        kbd.textContent = def.shortcutLabel;
+        kbd.textContent = formatShortcutLabel(def.shortcutLabel);
         row.appendChild(kbd);
       }
 

@@ -8,6 +8,12 @@
 웹 페이지에 HWP 에디터를 통째로 임베드합니다.
 메뉴, 툴바, 서식, 표 편집 — rhwp-studio의 모든 기능을 그대로 사용할 수 있습니다.
 
+SDK는 지원되는 Studio와 `MessageChannel` v1을 협상해 binary를 transferable로 전송합니다.
+구버전 Studio에는 기존 `postMessage` protocol로 자동 전환되며 기존 공개 API는 유지됩니다.
+`getRendererDiagnostics()`는 `renderer-diagnostics-v1` capability를 협상한 Studio에서만 사용할 수 있습니다.
+호스트와 `studioUrl`은 HTTP(S) origin만 지원합니다. `file:`, `data:`, 브라우저 확장처럼
+origin이 `null`이거나 불투명한 환경의 연결은 SDK와 Studio 양쪽에서 거부합니다.
+
 > **[온라인 데모](https://edwardkim.github.io/rhwp/)** 에서 먼저 체험해보세요.
 
 ## 설치
@@ -72,9 +78,11 @@ const editor = await createEditor(document.getElementById('editor'));
 
 | 옵션 | 기본값 | 설명 |
 |------|--------|------|
-| `studioUrl` | `https://edwardkim.github.io/rhwp/` | rhwp-studio URL |
+| `studioUrl` | `https://edwardkim.github.io/rhwp/` | rhwp-studio HTTP(S) URL. opaque origin은 지원하지 않음 |
 | `width` | `'100%'` | iframe 너비 |
 | `height` | `'100%'` | iframe 높이 |
+| `requestTimeoutMs` | method별 기본값 | 모든 method 제한 시간 override(ms). 일반 10초, load/export 60초 |
+| `handshakeTimeoutMs` | `1000` | v1 협상 후 legacy 전환까지의 제한 시간(ms) |
 
 ### editor.loadFile(data, fileName?)
 
@@ -101,6 +109,66 @@ const count = await editor.pageCount();
 const svg = await editor.getPageSvg(0); // 첫 페이지
 ```
 
+### editor.getRendererDiagnostics(page?)
+
+선택된 renderer와 0부터 시작하는 페이지별 readiness 진단을 반환합니다.
+Studio가 `renderer-diagnostics-v1` capability를 제공하지 않으면 명시적으로 실패합니다.
+
+```javascript
+const diagnostics = await editor.getRendererDiagnostics(0);
+console.log(diagnostics.schemaVersion, diagnostics.effectiveBackend);
+```
+
+### editor.exportHwp()
+
+현재 편집 중인 문서를 HWP 바이너리로 내보냅니다.
+
+```javascript
+const bytes = await editor.exportHwp();
+const blob = new Blob([bytes], { type: 'application/x-hwp' });
+
+const url = URL.createObjectURL(blob);
+const a = document.createElement('a');
+a.href = url;
+a.download = 'document.hwp';
+a.click();
+URL.revokeObjectURL(url);
+```
+
+### editor.exportHwpx()
+
+현재 편집 중인 문서를 HWPX(ZIP+XML) 바이너리로 내보냅니다.
+
+```javascript
+const bytes = await editor.exportHwpx();
+const blob = new Blob([bytes], { type: 'application/vnd.hancom.hwpx' });
+
+const url = URL.createObjectURL(blob);
+const a = document.createElement('a');
+a.href = url;
+a.download = 'document.hwpx';
+a.click();
+URL.revokeObjectURL(url);
+```
+
+### editor.exportHwpVerify()
+
+HWP 직렬화 + 자기 재로드 검증 메타데이터를 반환합니다 (#178).
+검증 메타데이터만 반환하며, 실제 HWP bytes 가 필요하면 `exportHwp()` 를 별도 호출하세요.
+
+```javascript
+const verify = await editor.exportHwpVerify();
+// {
+//   bytesLen: 678912,
+//   pageCountBefore: 9,
+//   pageCountAfter: 9,
+//   recovered: true
+// }
+if (!verify.recovered || verify.pageCountBefore !== verify.pageCountAfter) {
+  console.warn('HWP 직렬화 검증 실패', verify);
+}
+```
+
 ### editor.destroy()
 
 에디터를 제거합니다.
@@ -109,11 +177,116 @@ const svg = await editor.getPageSvg(0); // 첫 페이지
 editor.destroy();
 ```
 
+## 디버깅 도구 — rhwpDev
+
+iframe 안의 rhwp-studio에는 **개발 모드 전용 디버깅 헬퍼** `rhwpDev`가 내장되어 있습니다. 검색, 커서 이동, 문단 ID 점검 등을 콘솔에서 직접 호출할 수 있습니다.
+
+### 접근 방법
+
+`rhwpDev`는 **iframe 내부 window**에 등록됩니다. 브라우저 DevTools의 콘솔 컨텍스트를 iframe으로 전환한 후 호출하세요.
+
+**Chrome / Edge:** DevTools 콘솔 좌측 상단의 컨텍스트 드롭다운(`top ▾`)에서 `rhwp-studio iframe` 선택
+
+**Firefox:** 콘솔 우측 상단의 `iframe` 버튼 → iframe URL 선택
+
+```javascript
+// iframe 컨텍스트로 전환 후
+rhwpDev.help();   // 사용법 안내
+```
+
+> **주의:** rhwp-studio가 DEV 모드(vite dev server)로 빌드된 경우에만 `rhwpDev`가 등록됩니다. 프로덕션 빌드(기본 호스팅 URL `https://edwardkim.github.io/rhwp/`)에는 포함되지 않습니다. 디버깅 도구가 필요하면 셀프 호스팅 환경에서 `vite dev` 모드로 실행하세요.
+
+### 주요 메서드
+
+#### rhwpDev.search(text, includeCells?)
+
+문서 영역에서 모든 매치를 일괄 검색합니다. 반환: `SearchHit[]`
+
+```javascript
+const hits = rhwpDev.search("사업계획");
+// → 9 match(es), console.table 자동 표시
+//
+// [{sec: 0, para: 2, charOffset: 0, length: 13}, ...]
+
+// 표 셀/글상자 내부 포함
+const allHits = rhwpDev.search("사업계획", true);
+```
+
+#### rhwpDev.goto(hit, options?)
+
+SearchHit으로 커서를 이동하고 화면을 스크롤합니다. 반환: `boolean`
+
+```javascript
+const hits = rhwpDev.search("사업계획");
+
+// 3번째 매치로 이동 + 선택 (인덱스 2)
+rhwpDev.goto(hits[2]);
+
+// 캐럿만 이동 (선택 없음)
+rhwpDev.goto(hits[2], { select: false });
+
+// 한 줄 패턴
+rhwpDev.goto(rhwpDev.search("text")[0]);
+```
+
+#### rhwpDev.showAllIds(pageNum?)
+
+페이지의 모든 문단 ID를 `console.table`로 표시합니다.
+
+```javascript
+rhwpDev.showAllIds(0);    // 첫 페이지만
+rhwpDev.showAllIds();     // 전체 페이지
+```
+
+#### rhwpDev.findNearest(targetId, pageNum?)
+
+가장 가까운 paragraph 인덱스를 검색합니다.
+
+```javascript
+rhwpDev.findNearest(618);
+// → { paraIdx: 0, distance: 618, text: "...", container: "cell[p0,c2,i0]" }
+```
+
+#### rhwpDev.help()
+
+전체 사용법과 예시를 콘솔에 출력합니다.
+
+### SearchHit 구조
+
+```typescript
+interface SearchHit {
+  sec: number;          // 구역 인덱스
+  para: number;         // 본문: 문단 인덱스 / 셀: parentPara
+  charOffset: number;   // 문단 내 글자 오프셋
+  length: number;       // 매치 길이
+  cellContext?: {       // 셀/글상자 매치 시
+    parentPara: number;
+    ctrlIdx: number;
+    cellIdx: number;
+    cellPara: number;
+  };
+}
+```
+
+### 활용 예시 — 매치 일괄 강조
+
+```javascript
+// 모든 "회사" 매치를 순차적으로 보여주기
+const hits = rhwpDev.search("회사");
+let i = 0;
+setInterval(() => {
+  if (i >= hits.length) return;
+  rhwpDev.goto(hits[i++]);
+}, 1500);
+```
+
 ## 폰트 안내
 
 ### 기본 동작 — 별도 설정 없이 사용 가능
 
-`@rhwp/editor`는 오픈소스 폰트를 내장하고 있어 **별도 폰트 설정 없이 바로 사용**할 수 있습니다.
+`@rhwp/editor`가 기본으로 연결하는 rhwp-studio 배포본은 오픈소스 폰트를 포함하므로
+**별도 폰트 설정 없이 바로 사용**할 수 있습니다. `@rhwp/editor` 패키지 자체에는 폰트 파일이나
+UI runtime dependency가 포함되지 않습니다.
 
 HWP 문서에서 사용된 한컴 전용 폰트(한컴바탕, HY명조 등)는 자동으로 오픈소스 폰트로 폴백됩니다.
 
@@ -137,7 +310,10 @@ HWP 문서에서 사용된 한컴 전용 폰트(한컴바탕, HY명조 등)는 �
 
 ### 셀프 호스팅 시 폰트
 
-셀프 호스팅 환경에서는 rhwp-studio 빌드에 포함된 `web/fonts/` 폴더의 오픈소스 폰트가 자동으로 사용됩니다. 추가 폰트를 원하면 `web/fonts/`에 woff2 파일을 추가하고 CSS `@font-face`를 등록하면 됩니다.
+저장소의 canonical source는 `assets/fonts/`이고, rhwp-studio build는 이를 배포본의 runtime `fonts/`
+경로로 노출합니다. 셀프 호스팅 서버에서는 이 runtime 경로가 함께 배포되므로 별도 설정 없이
+오픈소스 폰트를 사용합니다. 추가 폰트는 `assets/fonts/`에 WOFF2를 추가하고
+`rhwp-studio/src/core/font-loader.ts`에 `@font-face`와 로딩 정책을 등록해야 합니다.
 
 ## 셀프 호스팅
 

@@ -56,8 +56,8 @@
 
 ## Size Comparison Summary
 
-| | rhwp | Hancom | Polaris |
-|--|------|--------|---------|
+| | rhwp | Hancom | A commercial web office |
+|--|------|--------|-------------------------|
 | WASM | **1.83 MB** | N/A | ~19 MB |
 | Font families | **386** | 342 | Unknown |
 | Font variants | **582** | 387 | Unknown |

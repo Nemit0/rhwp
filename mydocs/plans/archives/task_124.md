@@ -2,7 +2,7 @@
 
 ## 1. 목표
 
-Canvas 2D `fillText()` 대신 **폰트 글리프 아웃라인(베지어 곡선)을 직접 Canvas Path로 렌더링**하여, 한컴/폴라리스/PDF.js 수준의 벡터 텍스트 품질을 달성한다.
+Canvas 2D `fillText()` 대신 **폰트 글리프 아웃라인(베지어 곡선)을 직접 Canvas Path로 렌더링**하여, 한컴 등 상용 제품/PDF.js 수준의 벡터 텍스트 품질을 달성한다.
 
 ## 2. 현재 상태 분석
 
@@ -17,7 +17,7 @@ HWP → DocInfo.fonts → ResolvedCharStyle → TextStyle → draw_text()
 ### 문제점
 - `fillText()`는 브라우저의 텍스트 래스터라이저에 종속
 - 그레이스케일 안티앨리어싱만 지원 (서브픽셀 불가)
-- 줌 확대 시 한컴/폴라리스 대비 텍스트가 부드러워 보임 (soft edges)
+- 줌 확대 시 한컴 등 상용 제품 대비 텍스트가 부드러워 보임 (soft edges)
 
 ### 기존 자산
 - `ttfs/hamchob-r.ttf` — 함초롬바탕 (26.5MB)

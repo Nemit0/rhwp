@@ -14,9 +14,9 @@ canvas.style.width = pageWidthPx * zoom -> CSS scale
 -> On DPR=2 display, 1x resolution stretched to 2x -> blurry
 ```
 
-### Competitor Analysis Results
+### Commercial Product Analysis Results
 
-Competitor canvas rendering analysis (`mydocs/tech/canvas_rendering_analysis.md`) shows Hancom web viewer, Google Docs, and Polaris Office all use the same DPR pattern:
+Commercial product canvas rendering analysis (`mydocs/tech/investigations/issue-124/canvas_rendering_analysis.md`) shows Hancom web viewer, Google Docs, and a commercial web office all use the same DPR pattern:
 
 ```
 canvas.width  = pageWidth  * zoom * DPR    (physical pixels)

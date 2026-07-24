@@ -1,13 +1,17 @@
 {
   "name": "@rhwp/editor",
-  "version": "0.7.2",
+  "version": "0.7.19",
   "description": "HWP 에디터 웹 컴포넌트 — iframe 기반 임베드",
   "type": "module",
   "main": "index.js",
   "types": "index.d.ts",
+  "scripts": {
+    "test": "node --test tests/*.test.mjs"
+  },
   "files": [
     "index.js",
-    "index.d.ts"
+    "index.d.ts",
+    "transport.js"
   ],
   "keywords": [
     "hwp",
@@ -22,7 +26,7 @@
   ],
   "repository": {
     "type": "git",
-    "url": "https://github.com/edwardkim/rhwp"
+    "url": "git+https://github.com/edwardkim/rhwp.git"
   },
   "homepage": "https://edwardkim.github.io/rhwp/",
   "bugs": {

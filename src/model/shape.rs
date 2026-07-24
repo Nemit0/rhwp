@@ -1,8 +1,30 @@
 //! 그리기 개체 (Shape, Line, Rect, Ellipse, Arc, Polygon, Curve, Group, TextBox)
 
-use super::*;
 use super::paragraph::Paragraph;
 use super::style::{Fill, ShapeBorderLine};
+use super::*;
+
+/// `raw_ctrl_data` (CTRL_HEADER) 바이트 오프셋 상수.
+///
+/// `parse_common_obj_attr` 및 `serialize_common_obj_attr` 과 일치해야 한다.
+/// `table_ops.rs`, `object_ops.rs`, `html_table_import.rs` 등에서 직접 바이트
+/// 인덱싱 대신 이 상수를 사용한다.
+pub(crate) mod common_obj_offsets {
+    pub const FLAGS: std::ops::Range<usize> = 0..4;
+    pub const V_OFFSET: std::ops::Range<usize> = 4..8;
+    pub const H_OFFSET: std::ops::Range<usize> = 8..12;
+    pub const WIDTH: std::ops::Range<usize> = 12..16;
+    pub const HEIGHT: std::ops::Range<usize> = 16..20;
+    pub const Z_ORDER: std::ops::Range<usize> = 20..24;
+    pub const MARGIN_LEFT: std::ops::Range<usize> = 24..26;
+    pub const MARGIN_RIGHT: std::ops::Range<usize> = 26..28;
+    pub const MARGIN_TOP: std::ops::Range<usize> = 28..30;
+    pub const MARGIN_BOTTOM: std::ops::Range<usize> = 30..32;
+    pub const INSTANCE_ID: std::ops::Range<usize> = 32..36;
+    pub const PREVENT_PAGE_BREAK: std::ops::Range<usize> = 36..40;
+    pub const MIN_LEN: usize = INSTANCE_ID.end;
+    pub const MIN_LEN_WITH_PREVENT_PAGE_BREAK: usize = PREVENT_PAGE_BREAK.end;
+}
 
 /// 개체 공통 속성 (모든 개체에 공통)
 #[derive(Debug, Clone, Default)]
@@ -29,6 +51,22 @@ pub struct CommonObjAttr {
     pub prevent_page_break: i32,
     /// 글자처럼 취급
     pub treat_as_char: bool,
+    /// HWPX `hp:pos@flowWithText`.
+    ///
+    /// HWP5 GenShape CTRL_HEADER attr bit 13 후보로 보존한다.
+    pub flow_with_text: bool,
+    /// HWPX `hp:pos@allowOverlap`.
+    ///
+    /// HWP5 GenShape CTRL_HEADER attr bit 14 후보로 보존한다.
+    pub allow_overlap: bool,
+    /// HWPX 출처 GenShape를 HWP5로 저장할 때 필요한 storage high bit 후보.
+    ///
+    /// Table adapter의 `0x08000000` 보강과 다른 `0x04000000` bit 26이다.
+    pub hwp5_gen_shape_attr_bit26: bool,
+    /// VertRelTo가 para일 때 크기 보호 여부 (HWP5 GenShape CTRL_HEADER attr bit 20).
+    pub size_protect: bool,
+    /// HWPX 출처 GenShape 번호 범주 high bit 후보 (HWP5 GenShape CTRL_HEADER attr bit 28).
+    pub hwp5_gen_shape_attr_bit28: bool,
     /// 세로 위치 기준
     pub vert_rel_to: VertRelTo,
     /// 세로 정렬 방식
@@ -37,16 +75,33 @@ pub struct CommonObjAttr {
     pub horz_rel_to: HorzRelTo,
     /// 가로 정렬 방식
     pub horz_align: HorzAlign,
-    /// 텍스트 흐름 방식
+    /// 텍스트 흐름 방식 (개체 배치 방식 — attr bit 21-23)
     pub text_wrap: TextWrap,
+    /// 텍스트가 흐르는 방향 (attr bit 24-25)
+    pub text_flow: TextFlow,
     /// 너비 기준 (bit 15-17): 0=Paper, 1=Page, 2=Column, 3=Para, 4=Absolute
     pub width_criterion: SizeCriterion,
     /// 높이 기준 (bit 18-19): 0=Paper, 1=Page, 2=Absolute
     pub height_criterion: SizeCriterion,
     /// 개체 설명문
     pub description: String,
+    /// HWPX `numberingType` (캡션 번호 범주) 보존 (#1379).
+    ///
+    /// HWP5 파서는 설정하지 않는다 (기본 None). HWPX 그리기 개체의
+    /// `numberingType="PICTURE"` 등을 라운드트립 보존하기 위한 필드.
+    pub numbering_type: ObjectNumberingType,
     /// 파싱된 필드 이후 추가 바이트 (라운드트립 보존용)
     pub raw_extra: Vec<u8>,
+}
+
+/// HWPX 개체 `numberingType` (캡션 번호 범주)
+#[derive(Debug, Clone, Copy, Default, PartialEq)]
+pub enum ObjectNumberingType {
+    #[default]
+    None,
+    Picture,
+    Table,
+    Equation,
 }
 
 /// 세로 위치 기준
@@ -106,8 +161,8 @@ pub enum SizeCriterion {
     Absolute,
 }
 
-/// 텍스트 흐름 방식
-#[derive(Debug, Clone, Copy, Default, PartialEq)]
+/// 텍스트 흐름 방식 (개체 배치 — attr bit 21-23)
+#[derive(Debug, Clone, Copy, Default, PartialEq, serde::Serialize)]
 pub enum TextWrap {
     #[default]
     Square,
@@ -116,6 +171,18 @@ pub enum TextWrap {
     TopAndBottom,
     BehindText,
     InFrontOfText,
+}
+
+/// 텍스트가 흐르는 방향 (attr bit 24-25)
+///
+/// HWPX `textFlow` 속성값과 대응한다.
+#[derive(Debug, Clone, Copy, Default, PartialEq)]
+pub enum TextFlow {
+    #[default]
+    BothSides,
+    LeftOnly,
+    RightOnly,
+    LargestOnly,
 }
 
 /// 개체 요소 속성 (그리기 개체 공통)
@@ -141,6 +208,12 @@ pub struct ShapeComponentAttr {
     pub current_width: u32,
     /// 현재 높이
     pub current_height: u32,
+    /// [#2017] HWPX 원본이 `curSz width="0"`을 기록했고 파싱 시 orgSz로 materialize된 경우 true.
+    /// materialize는 렌더/HWP5 저장이 실크기를 필요로 하기 때문에 유지하되, HWPX 재직렬화는
+    /// 이 플래그로 원본 `0` sentinel을 복원해 roundtrip 충실도를 보존한다.
+    pub current_width_was_zero: bool,
+    /// [#2017] HWPX 원본이 `curSz height="0"`을 기록했고 파싱 시 orgSz로 materialize된 경우 true.
+    pub current_height_was_zero: bool,
     /// 뒤집기 속성 원본 값 (bit 0: 수평, bit 1: 수직, 상위 비트 보존)
     pub flip: u32,
     /// 수평 뒤집기
@@ -149,6 +222,10 @@ pub struct ShapeComponentAttr {
     pub vert_flip: bool,
     /// 회전각
     pub rotation_angle: HwpUnit16,
+    /// HWPX rotationInfo@rotateimage 보존.
+    ///
+    /// HWP5 SHAPE_COMPONENT offset 36 storage field의 0x0008_0000 bit로 materialize된다.
+    pub rotate_image: bool,
     /// 회전 중심 좌표
     pub rotation_center: Point,
     /// 렌더링 정보 원본 바이트 (변환 행렬 등, 라운드트립 보존용)
@@ -179,10 +256,13 @@ impl Default for ShapeComponentAttr {
             original_height: 0,
             current_width: 0,
             current_height: 0,
+            current_width_was_zero: false,
+            current_height_was_zero: false,
             flip: 0,
             horz_flip: false,
             vert_flip: false,
             rotation_angle: 0,
+            rotate_image: false,
             rotation_center: Point::default(),
             raw_rendering: Vec::new(),
             render_tx: 0.0,
@@ -227,6 +307,11 @@ pub struct DrawingObjAttr {
 pub struct TextBox {
     /// LIST_HEADER list_attr (라운드트립 보존용)
     pub list_attr: u32,
+    /// HWPX `textDirection="VERTICALALL"` 구분 보존 (#1379).
+    ///
+    /// `list_attr` bit 0~2 는 VERTICAL/VERTICALALL 을 모두 code 1 로 합치므로
+    /// (renderer 세로쓰기 분기 호환), HWPX 라운드트립용 구분은 본 필드로 보존한다.
+    pub vertical_all: bool,
     /// 세로 정렬 (list_attr bit 5~6: 0=top, 1=center, 2=bottom)
     pub vertical_align: crate::model::table::VerticalAlign,
     /// 왼쪽 여백
@@ -264,6 +349,10 @@ pub enum ShapeObject {
     Group(GroupShape),
     /// 그림 개체 (묶음 내 자식으로 포함될 때)
     Picture(Box<crate::model::image::Picture>),
+    /// 차트 개체 (GSO + HWPTAG_CHART_DATA)
+    Chart(Box<ChartShape>),
+    /// OLE 개체 (HWPTAG_SHAPE_COMPONENT_OLE)
+    Ole(Box<OleShape>),
 }
 
 impl ShapeObject {
@@ -278,6 +367,8 @@ impl ShapeObject {
             ShapeObject::Curve(s) => &s.common,
             ShapeObject::Group(g) => &g.common,
             ShapeObject::Picture(p) => &p.common,
+            ShapeObject::Chart(c) => &c.common,
+            ShapeObject::Ole(o) => &o.common,
         }
     }
 
@@ -292,10 +383,12 @@ impl ShapeObject {
             ShapeObject::Curve(s) => &mut s.common,
             ShapeObject::Group(g) => &mut g.common,
             ShapeObject::Picture(p) => &mut p.common,
+            ShapeObject::Chart(c) => &mut c.common,
+            ShapeObject::Ole(o) => &mut o.common,
         }
     }
 
-    /// 그리기 공통 속성 참조 반환 (Group/Picture는 None)
+    /// 그리기 공통 속성 참조 반환 (Group/Picture/Ole 내용 없는 종류는 None)
     pub fn drawing(&self) -> Option<&DrawingObjAttr> {
         match self {
             ShapeObject::Line(s) => Some(&s.drawing),
@@ -304,6 +397,8 @@ impl ShapeObject {
             ShapeObject::Arc(s) => Some(&s.drawing),
             ShapeObject::Polygon(s) => Some(&s.drawing),
             ShapeObject::Curve(s) => Some(&s.drawing),
+            ShapeObject::Chart(c) => Some(&c.drawing),
+            ShapeObject::Ole(o) => Some(&o.drawing),
             ShapeObject::Group(_) | ShapeObject::Picture(_) => None,
         }
     }
@@ -317,6 +412,8 @@ impl ShapeObject {
             ShapeObject::Arc(s) => Some(&mut s.drawing),
             ShapeObject::Polygon(s) => Some(&mut s.drawing),
             ShapeObject::Curve(s) => Some(&mut s.drawing),
+            ShapeObject::Chart(c) => Some(&mut c.drawing),
+            ShapeObject::Ole(o) => Some(&mut o.drawing),
             ShapeObject::Group(_) | ShapeObject::Picture(_) => None,
         }
     }
@@ -337,6 +434,8 @@ impl ShapeObject {
             ShapeObject::Curve(s) => &s.drawing.shape_attr,
             ShapeObject::Group(g) => &g.shape_attr,
             ShapeObject::Picture(p) => &p.shape_attr,
+            ShapeObject::Chart(c) => &c.drawing.shape_attr,
+            ShapeObject::Ole(o) => &o.drawing.shape_attr,
         }
     }
 
@@ -351,6 +450,8 @@ impl ShapeObject {
             ShapeObject::Curve(_) => "곡선",
             ShapeObject::Group(_) => "묶음",
             ShapeObject::Picture(_) => "그림(묶음내)",
+            ShapeObject::Chart(_) => "차트",
+            ShapeObject::Ole(_) => "OLE",
         }
     }
 }
@@ -406,7 +507,10 @@ impl LinkLineType {
 
     /// 꺽인 연결선인지
     pub fn is_stroke(&self) -> bool {
-        matches!(self, Self::StrokeNoArrow | Self::StrokeOneWay | Self::StrokeBoth)
+        matches!(
+            self,
+            Self::StrokeNoArrow | Self::StrokeOneWay | Self::StrokeBoth
+        )
     }
 
     /// 곡선 연결선인지
@@ -508,6 +612,8 @@ pub struct PolygonShape {
     pub drawing: DrawingObjAttr,
     /// 꼭짓점 좌표 목록
     pub points: Vec<Point>,
+    /// SHAPE_POLYGON 끝 패딩/추가 바이트 (라운드트립 보존)
+    pub raw_trailing: Vec<u8>,
 }
 
 /// 곡선 개체 (HWPTAG_SHAPE_COMPONENT_CURVE)
@@ -574,6 +680,147 @@ pub enum CaptionVertAlign {
     Bottom,
 }
 
+// ============================================================
+// 차트 개체 (Task #195)
+// ============================================================
+
+/// 차트 종류 (1차 범위: Bar/Column/Line/Pie/Area/Scatter)
+#[derive(Debug, Clone, Copy, Default, PartialEq)]
+pub enum ChartType {
+    Bar,
+    Column,
+    Line,
+    Pie,
+    Area,
+    Scatter,
+    #[default]
+    Unknown,
+}
+
+/// 범례 위치
+#[derive(Debug, Clone, Copy, Default, PartialEq)]
+pub enum LegendPosition {
+    #[default]
+    Right,
+    Left,
+    Top,
+    Bottom,
+    TopLeft,
+    TopRight,
+    BottomLeft,
+    BottomRight,
+    Hidden,
+}
+
+/// 범례
+#[derive(Debug, Clone, Default)]
+pub struct Legend {
+    pub position: LegendPosition,
+    pub visible: bool,
+}
+
+/// 축
+#[derive(Debug, Clone, Default)]
+pub struct Axis {
+    pub label: Option<String>,
+    pub labels: Vec<String>,
+    pub min: Option<f64>,
+    pub max: Option<f64>,
+}
+
+/// 데이터 시리즈 (한 줄기 막대/선 등)
+#[derive(Debug, Clone, Default)]
+pub struct DataSeries {
+    /// 시리즈 이름 (범례 표시용)
+    pub name: String,
+    /// Y값 (또는 파이의 각 조각 값)
+    pub values: Vec<f64>,
+    /// X축 레이블 (시리즈 간 공유되지만 편의상 각자 보관)
+    pub categories: Vec<String>,
+    /// RGB 색상 (`0xRRGGBB`)
+    pub color: Option<u32>,
+}
+
+/// 차트 개체 (GSO + HWPTAG_CHART_DATA)
+#[derive(Debug, Clone, Default)]
+pub struct ChartShape {
+    /// 공통 속성
+    pub common: CommonObjAttr,
+    /// 그리기 공통 속성
+    pub drawing: DrawingObjAttr,
+    /// 차트 종류
+    pub chart_type: ChartType,
+    /// 타이틀
+    pub title: Option<String>,
+    /// 범례
+    pub legend: Option<Legend>,
+    /// X축
+    pub x_axis: Option<Axis>,
+    /// Y축
+    pub y_axis: Option<Axis>,
+    /// 데이터 시리즈 목록
+    pub series: Vec<DataSeries>,
+    /// CHART_DATA 레코드 원본 바이트(라운드트립 보존용, 하위 태그 전체 병합)
+    pub raw_chart_data: Vec<u8>,
+    /// 캡션
+    pub caption: Option<Caption>,
+}
+
+// ============================================================
+// OLE 개체 (Task #195)
+// ============================================================
+
+/// OLE 프리뷰 이미지 포맷
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum OlePreviewFormat {
+    Wmf,
+    Emf,
+    Png,
+    Bmp,
+}
+
+/// OLE 프리뷰 이미지
+#[derive(Debug, Clone)]
+pub struct OlePreview {
+    pub format: OlePreviewFormat,
+    pub bytes: Vec<u8>,
+}
+
+/// OLE 표시 방식 (DrawingAspect)
+#[derive(Debug, Clone, Copy, Default, PartialEq)]
+pub enum OleDrawingAspect {
+    #[default]
+    Content,
+    Icon,
+    Thumbnail,
+    DocPrint,
+}
+
+/// OLE 개체 (HWPTAG_SHAPE_COMPONENT_OLE)
+#[derive(Debug, Clone, Default)]
+pub struct OleShape {
+    /// 공통 속성
+    pub common: CommonObjAttr,
+    /// 그리기 공통 속성
+    pub drawing: DrawingObjAttr,
+    /// 개체 영역 가로 (HWPUNIT)
+    pub extent_x: i32,
+    /// 개체 영역 세로 (HWPUNIT)
+    pub extent_y: i32,
+    /// OLE 속성 플래그
+    pub flags: u8,
+    /// 표시 방식
+    pub drawing_aspect: OleDrawingAspect,
+    /// BinData 참조 ID (`BinData/BIN000N.OLE`)
+    pub bin_data_id: u32,
+    /// 프리뷰 이미지 (단계 4 이후 선택적 채움)
+    pub preview: Option<OlePreview>,
+    /// OLE 레코드 원본 바이트 (라운드트립 보존)
+    pub raw_tag_data: Vec<u8>,
+    /// 캡션
+    pub caption: Option<Caption>,
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -588,10 +835,7 @@ mod tests {
     #[test]
     fn test_shape_object_line() {
         let line = ShapeObject::Line(LineShape::default());
-        match line {
-            ShapeObject::Line(_) => assert!(true),
-            _ => panic!("Expected Line variant"),
-        }
+        assert!(matches!(line, ShapeObject::Line(_)));
     }
 
     #[test]

@@ -1,3 +1,10 @@
+---
+kind: guide
+status: active
+canonical: mydocs/manual/e2e_verification_guide.md
+last_verified: 2026-07-17
+---
+
 # CDP를 사용한 E2E 테스트 가이드
 
 > Chrome DevTools Protocol(CDP)을 통해 rhwp-studio 편집기의 E2E 테스트를 자동 실행하고,
@@ -9,9 +16,10 @@
 
 ### 1.1 WASM 빌드
 
+저장소 루트에서 [개발 환경 가이드](dev_environment_guide.md)의 WASM 빌드 절차를 따른다.
+
 ```bash
-# Docker를 사용한 WASM 빌드
-docker compose --env-file .env.docker run --rm wasm
+wasm-pack build --target web --out-dir pkg
 ```
 
 빌드 결과물은 `pkg/` 폴더에 생성된다.

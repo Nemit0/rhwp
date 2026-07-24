@@ -10,39 +10,38 @@
 
 use std::io::Write;
 
-use crate::model::bin_data::{BinData, BinDataType};
 use crate::model::bin_data::BinDataContent;
+use crate::model::bin_data::{BinData, BinDataType};
 use crate::model::document::{Document, Preview};
 
 use super::body_text::serialize_section;
 use super::doc_info::serialize_doc_info;
 use super::header::serialize_file_header;
 use super::mini_cfb;
-
-/// 직렬화 에러
-#[derive(Debug)]
-pub enum SerializeError {
-    /// CFB 생성/쓰기 실패
-    CfbError(String),
-    /// 압축 실패
-    CompressError(String),
-}
-
-impl std::fmt::Display for SerializeError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            SerializeError::CfbError(e) => write!(f, "CFB 쓰기 실패: {}", e),
-            SerializeError::CompressError(e) => write!(f, "압축 실패: {}", e),
-        }
-    }
-}
-
-impl std::error::Error for SerializeError {}
+use super::SerializeError;
 
 /// Document IR을 HWP 5.0 CFB 바이너리로 직렬화
 pub fn serialize_hwp(doc: &Document) -> Result<Vec<u8>, SerializeError> {
     // 1. FileHeader 직렬화
-    let header_bytes = serialize_file_header(&doc.header);
+    // [Task #1768] 배포용/암호화 문서 강하: IR 은 이미 복호화된 평문이고 본 직렬화는
+    // ViewText/DISTRIBUTE_DOC_DATA 를 생성하지 않으므로, 플래그를 유지하면 산출물
+    // 재로드가 "암호 오류: DISTRIBUTE_DOC_DATA 레코드 없음" 으로 실패한다. 일반
+    // 문서로 강하(배포용 0x04 · 암호화 0x02 클리어, raw_data 의 [36..40] 도 패치).
+    let header_bytes = if doc.header.distribution || doc.header.encrypted {
+        let mut header = doc.header.clone();
+        header.distribution = false;
+        header.encrypted = false;
+        header.flags &= !0x06;
+        if let Some(raw) = header.raw_data.as_mut() {
+            if raw.len() >= 40 {
+                let flags = u32::from_le_bytes([raw[36], raw[37], raw[38], raw[39]]) & !0x06u32;
+                raw[36..40].copy_from_slice(&flags.to_le_bytes());
+            }
+        }
+        serialize_file_header(&header)
+    } else {
+        serialize_file_header(&doc.header)
+    };
 
     // 2. DocInfo 직렬화
     let doc_info_bytes = serialize_doc_info(&doc.doc_info, &doc.doc_properties);
@@ -122,14 +121,36 @@ fn write_hwp_cfb(
 
     // 4. /BinData/BIN{XXXX}.{ext}
     // BinData는 개별 압축 속성에 따라 재압축
+    const CFB_MAGIC: [u8; 8] = [0xD0, 0xCF, 0x11, 0xE0, 0xA1, 0xB1, 0x1A, 0xE1];
     for content in bin_data_content {
-        let (storage_id, ext, should_compress) = find_bin_data_info_with_compress(bin_data_list, content, compressed);
+        let (storage_id, ext, should_compress) =
+            find_bin_data_info_with_compress(bin_data_list, content, compressed);
         let storage_name = format!("BIN{:04X}.{}", storage_id, ext);
         let path = format!("/BinData/{}", storage_name);
-        let data = if should_compress {
-            compress_stream(&content.data).unwrap_or_else(|_| content.data.clone())
+
+        // OLE Storage 복원: 파서(`load_bin_data_content`)는 내부 CFB 를 바로 노출하기 위해
+        // 선두 4-byte LE size prefix 를 제거(`drain(..4)`)한다. 직렬화 시 이를 다시 붙이지
+        // 않으면 한컴이 CFB 매직(D0CF11E0)을 OLE 개체 크기(~3.75GB)로 오인하여
+        // "메모리 부족" 오류가 발생한다. 파서의 strip 조건을 그대로 미러링한다.
+        let bytes = content.data.load();
+        let is_ole_storage = bytes.len() >= 8
+            && bytes[..8] == CFB_MAGIC
+            && bin_data_list
+                .iter()
+                .any(|bd| bd.data_type == BinDataType::Storage && bd.storage_id == content.id);
+        let payload: Vec<u8> = if is_ole_storage {
+            let mut v = Vec::with_capacity(bytes.len() + 4);
+            v.extend_from_slice(&(bytes.len() as u32).to_le_bytes());
+            v.extend_from_slice(&bytes);
+            v
         } else {
-            content.data.clone()
+            bytes
+        };
+
+        let data = if should_compress {
+            compress_stream(&payload).unwrap_or_else(|_| payload.clone())
+        } else {
+            payload
         };
         streams.push((path, data));
     }
@@ -177,7 +198,9 @@ fn find_bin_data_info_with_compress<'a>(
 ) -> (u16, &'a str, bool) {
     use crate::model::bin_data::BinDataCompression;
     for bd in bin_data_list {
-        if bd.data_type == BinDataType::Embedding && bd.storage_id == content.id {
+        if matches!(bd.data_type, BinDataType::Embedding | BinDataType::Storage)
+            && bd.storage_id == content.id
+        {
             let ext = bd.extension.as_deref().unwrap_or("dat");
             let should_compress = match bd.compression {
                 BinDataCompression::Default => doc_compressed,
@@ -190,7 +213,6 @@ fn find_bin_data_info_with_compress<'a>(
     // 못 찾으면 content에서 직접 추출 (문서 압축 플래그 따름)
     (content.id, &content.extension, doc_compressed)
 }
-
 
 #[cfg(test)]
 mod tests;

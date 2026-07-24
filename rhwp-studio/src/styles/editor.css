@@ -5,32 +5,35 @@
 /* editor-area: 눈금자 + 스크롤 영역을 2×2 Grid로 배치 */
 #editor-area {
   display: grid;
-  grid-template-columns: 20px 1fr;
-  grid-template-rows: 20px 1fr;
+  /* minmax(0, 1fr): 1fr(=minmax(auto,1fr))은 콘텐츠 기반 최소 크기가 한 방향
+     래칫으로 작동해 창을 넓혔다 줄이면 트랙이 줄지 않는다(#1191). 최소를 0으로
+     고정해 창 축소 시에도 트랙이 정상 축소되어 가운데 정렬이 유지된다. */
+  grid-template-columns: 20px minmax(0, 1fr);
+  grid-template-rows: 20px minmax(0, 1fr);
   flex: 1;
   overflow: hidden;
 }
 
 /* 눈금자 교차 코너 (좌상단) */
 #ruler-corner {
-  background: #d0d0d0;
-  border-right: 1px solid #999;
-  border-bottom: 1px solid #999;
+  background: var(--ruler-bg);
+  border-right: 1px solid var(--ui-border-strong);
+  border-bottom: 1px solid var(--ui-border-strong);
 }
 
 /* 가로 눈금자 */
 #h-ruler {
   display: block;
-  border-bottom: 1px solid #999;
-  background: #d0d0d0;
+  border-bottom: 1px solid var(--ui-border-strong);
+  background: var(--ruler-bg);
   cursor: default;
 }
 
 /* 세로 눈금자 */
 #v-ruler {
   display: block;
-  border-right: 1px solid #999;
-  background: #d0d0d0;
+  border-right: 1px solid var(--ui-border-strong);
+  background: var(--ruler-bg);
   cursor: default;
 }
 
@@ -38,7 +41,7 @@
   position: relative;
   overflow-y: auto;
   overflow-x: auto;
-  background: var(--color-hover-bg);
+  background: var(--doc-workspace);
 }
 
 #scroll-content {
@@ -50,8 +53,14 @@
   position: absolute;
   left: 50%;
   transform: translateX(-50%);
-  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.15);
-  background: var(--color-surface);
+  z-index: 0;
+  box-shadow: none;
+  background: var(--doc-paper);
+}
+
+#scroll-content .page-grid-overlay {
+  position: absolute;
+  mix-blend-mode: multiply;
 }
 
 #scroll-content.grid-mode canvas {
@@ -60,12 +69,12 @@
 
 /* Drag & Drop */
 #scroll-container.drag-over {
-  background: #d0d8e8;
-  outline: 3px dashed #4a90d9;
+  background: var(--ui-selected);
+  outline: 3px dashed var(--focus-ring);
   outline-offset: -3px;
 }
 
 /* 머리말/꼬리말 편집 모드: 본문 영역 dimming */
 #scroll-container.hf-editing {
-  background: #c8c8c8;
+  background: var(--ui-active);
 }

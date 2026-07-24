@@ -4,6 +4,8 @@
  * 한컴 셀 나누기 대화상자를 재현한다.
  * ModalDialog를 상속하지 않고 독립 빌드 (커스텀 버튼 텍스트 + 2단 레이아웃).
  */
+import { enableDialogDrag } from './dialog-drag';
+
 export class CellSplitDialog {
   onApply: ((nRows: number, mCols: number, equalHeight: boolean, mergeFirst: boolean) => void) | null = null;
 
@@ -45,9 +47,6 @@ export class CellSplitDialog {
     // 오버레이
     this.overlay = document.createElement('div');
     this.overlay.className = 'modal-overlay';
-    this.overlay.addEventListener('click', (e) => {
-      if (e.target === this.overlay) this.hide();
-    });
 
     // 다이얼로그
     this.dialog = document.createElement('div');
@@ -64,6 +63,7 @@ export class CellSplitDialog {
     closeBtn.addEventListener('click', () => this.hide());
     titleBar.appendChild(closeBtn);
     this.dialog.appendChild(titleBar);
+    enableDialogDrag(this.dialog, titleBar);
 
     // 본문: 2단 레이아웃 (좌측=폼, 우측=버튼)
     const body = document.createElement('div');

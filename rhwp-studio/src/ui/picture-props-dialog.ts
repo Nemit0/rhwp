@@ -10,9 +10,12 @@
  * 레이아웃: 좌측(탭+컨텐츠) + 우측(버튼) 패턴
  * CSS 접두어: pp-
  */
-import type { PictureProperties, ShapeProperties } from '@/core/types';
+import type { PictureProperties, ShapeProperties, CellPathLike } from '@/core/types';
 import type { WasmBridge } from '@/core/wasm-bridge';
 import type { EventBus } from '@/core/event-bus';
+import type { CommandServices } from '@/command/types';
+import { userSettings } from '@/core/user-settings';
+import { enableDialogDrag } from './dialog-drag';
 
 /** HWPUNIT ↔ mm 변환 상수 (1 inch = 25.4 mm = 7200 HWPUNIT) */
 const HWP_PER_MM = 7200 / 25.4; // ≈ 283.46
@@ -45,6 +48,8 @@ function hexToColorRef(hex: string): number {
 const PICTURE_TAB_NAMES = ['기본', '여백/캡션', '선', '그림', '그림자', '반사', '네온', '열은 테두리'];
 /** 탭 이름 — 글상자용 */
 const SHAPE_TAB_NAMES = ['기본', '여백/캡션', '선', '채우기', '글상자', '그림자'];
+/** 탭 이름 — OLE용 */
+const OLE_TAB_NAMES = ['기본', '여백/캡션', '선'];
 /** 탭 이름 — 직선용 (채우기/글상자 불필요) */
 const LINE_TAB_NAMES = ['기본', '여백/캡션', '선', '그림자'];
 
@@ -55,6 +60,8 @@ export class PicturePropsDialog {
 
   private wasm: WasmBridge;
   private eventBus: EventBus;
+  /** undo 기록 라우팅용 (없으면 wasm 직접 호출 fallback). */
+  private services: CommandServices | undefined;
 
   // 탭
   private tabs: HTMLButtonElement[] = [];
@@ -66,7 +73,13 @@ export class PicturePropsDialog {
   private sec = 0;
   private para = 0;
   private ci = 0;
-  private objectType: 'image' | 'shape' | 'line' = 'image';
+  private objectType: 'image' | 'shape' | 'line' | 'group' | 'ole' = 'image';
+  /** [Task #825] 머리말/꼬리말 그림 marker (Some 일 때 신규 API 사용). */
+  private headerFooter: { kind: 'header' | 'footer'; outerParaIdx: number; outerControlIdx: number } | undefined;
+  /** [Task #1138] 표 셀 내 객체 marker (Some 일 때 by_path API 사용). */
+  private cellPath: CellPathLike | undefined;
+  /** [Task #1138] 셀 paragraph 내 picture/shape control 인덱스 (cellPath 동반). */
+  private innerControlIdx = 0;
   private props: PictureProperties | null = null;
   private shapeProps: ShapeProperties | null = null;
 
@@ -75,6 +88,9 @@ export class PicturePropsDialog {
   private widthInput!: HTMLInputElement;
   private heightInput!: HTMLInputElement;
   private sizeFixedCheck!: HTMLInputElement;
+  private keepRatioCheck!: HTMLInputElement;
+  private sizeLockControls: Array<HTMLInputElement | HTMLSelectElement | HTMLButtonElement> = [];
+  private syncingBasicSize = false;
   private originalWidth = 0;
   private originalHeight = 0;
 
@@ -178,6 +194,9 @@ export class PicturePropsDialog {
   private tbFormModeCheck!: HTMLInputElement;
 
   // ── 그림 탭 컨트롤 ──
+  // [Task #741 후속] 외부 file path 그림 영역 영역 dialog 표시 영역
+  private picFileNameInput!: HTMLInputElement;
+  private picEmbedCheck!: HTMLInputElement;
   private picScaleXInput!: HTMLInputElement;
   private picScaleYInput!: HTMLInputElement;
   private picKeepRatioCheck!: HTMLInputElement;
@@ -193,6 +212,7 @@ export class PicturePropsDialog {
   private picBrightnessInput!: HTMLInputElement;
   private picContrastInput!: HTMLInputElement;
   private picWatermarkCheck!: HTMLInputElement;
+  private picTransparencyInput!: HTMLInputElement;
 
   // ── 그림자 탭 컨트롤 ──
   private shadowTypeBtns: HTMLButtonElement[] = [];
@@ -202,28 +222,60 @@ export class PicturePropsDialog {
   private shadowDirBtns: HTMLButtonElement[] = [];
   private shadowTransInput!: HTMLInputElement;
 
-  constructor(wasm: WasmBridge, eventBus: EventBus) {
+  constructor(wasm: WasmBridge, eventBus: EventBus, services?: CommandServices) {
     this.wasm = wasm;
     this.eventBus = eventBus;
+    this.services = services;
   }
 
   // ════════════════════════════════════════════════════════
   //  공개 API
   // ════════════════════════════════════════════════════════
 
-  open(sec: number, para: number, ci: number, type: 'image' | 'shape' | 'line' = 'image'): void {
+  open(
+    sec: number,
+    para: number,
+    ci: number,
+    type: 'image' | 'shape' | 'line' | 'group' | 'ole' = 'image',
+    headerFooter?: { kind: 'header' | 'footer'; outerParaIdx: number; outerControlIdx: number },
+    cellPath?: CellPathLike,
+    innerControlIdx?: number,
+  ): void {
     this.build();
     this.sec = sec;
     this.para = para;
     this.ci = ci;
     this.objectType = type;
+    this.headerFooter = headerFooter;
+    // [Task #1138] cellPath 가 있으면 표 셀 내부 객체 — by_path API 사용.
+    this.cellPath = cellPath;
+    this.innerControlIdx = innerControlIdx ?? 0;
 
-    if (type === 'shape' || type === 'line') {
-      this.shapeProps = this.wasm.getShapeProperties(sec, para, ci);
+    // getter 분기:
+    // - shape/line/group/ole: cellPath > 외부 (셀 안 도형은 by_path API)
+    // - picture: headerFooter > cellPath > 외부
+    //   [Task #1151 v4] 셀 안 inline picture 는 getCellPicturePropertiesByPath
+    //   wasm API 호출.
+    if (type === 'shape' || type === 'line' || type === 'group' || type === 'ole') {
+      if (cellPath) {
+        this.shapeProps = this.wasm.getCellShapePropertiesByPath(sec, para, cellPath, this.innerControlIdx);
+      } else {
+        this.shapeProps = this.wasm.getShapeProperties(sec, para, ci);
+      }
       this.props = this.shapeProps as unknown as PictureProperties;
     } else {
       this.shapeProps = null;
-      this.props = this.wasm.getPictureProperties(sec, para, ci);
+      if (headerFooter) {
+        // [Task #825] 머리말/꼬리말 그림 — 별도 5-tuple API
+        this.props = this.wasm.getHeaderFooterPictureProperties(
+          sec, headerFooter.outerParaIdx, headerFooter.outerControlIdx, para, ci,
+        );
+      } else if (cellPath) {
+        // [Task #1151 v4] 셀 안 inline picture — by_path API 호출.
+        this.props = this.wasm.getCellPicturePropertiesByPath(sec, para, cellPath, this.innerControlIdx);
+      } else {
+        this.props = this.wasm.getPictureProperties(sec, para, ci);
+      }
     }
     this.originalWidth = this.props.width;
     this.originalHeight = this.props.height;
@@ -302,15 +354,12 @@ export class PicturePropsDialog {
     this.dialog.appendChild(mainRow);
     this.overlay.appendChild(this.dialog);
 
-    // Escape / 오버레이 클릭
+    // Escape
     this.overlay.addEventListener('keydown', (e) => {
       if (e.key === 'Escape') { e.stopPropagation(); this.hide(); }
     });
-    this.overlay.addEventListener('mousedown', (e) => {
-      if (e.target === this.overlay) this.hide();
-    });
 
-    this.enableDrag(titleBar);
+    enableDialogDrag(this.dialog, titleBar);
   }
 
   private switchTab(idx: number): void {
@@ -320,13 +369,15 @@ export class PicturePropsDialog {
 
   /** 개체 타입에 따라 탭을 재구성한다 */
   private rebuildTabs(): void {
-    this.tabGroup.innerHTML = '';
-    this.body.innerHTML = '';
+    this.tabGroup.replaceChildren();
+    this.body.replaceChildren();
     this.tabs = [];
     this.panels = [];
+    this.sizeLockControls = [];
 
-    const tabNames = this.objectType === 'line' ? LINE_TAB_NAMES
-      : this.objectType === 'shape' ? SHAPE_TAB_NAMES
+    const tabNames = this.objectType === 'ole' ? OLE_TAB_NAMES
+      : this.objectType === 'line' ? LINE_TAB_NAMES
+      : (this.objectType === 'shape' || this.objectType === 'group') ? SHAPE_TAB_NAMES
       : PICTURE_TAB_NAMES;
     tabNames.forEach((name, i) => {
       const btn = document.createElement('button');
@@ -373,8 +424,11 @@ export class PicturePropsDialog {
     // 너비
     const wRow = this.row();
     wRow.appendChild(this.label('너비(W)'));
-    wRow.appendChild(this.sizeTypeSelect());
+    const widthTypeSelect = this.sizeTypeSelect();
+    this.sizeLockControls.push(widthTypeSelect);
+    wRow.appendChild(widthTypeSelect);
     this.widthInput = this.numberInput(0);
+    this.sizeLockControls.push(this.widthInput);
     wRow.appendChild(this.widthInput);
     wRow.appendChild(this.unit('mm'));
     sizeFs.appendChild(wRow);
@@ -382,29 +436,52 @@ export class PicturePropsDialog {
     // 높이
     const hRow = this.row();
     hRow.appendChild(this.label('높이(H)'));
-    hRow.appendChild(this.sizeTypeSelect());
+    const heightTypeSelect = this.sizeTypeSelect();
+    this.sizeLockControls.push(heightTypeSelect);
+    hRow.appendChild(heightTypeSelect);
     this.heightInput = this.numberInput(0);
+    this.sizeLockControls.push(this.heightInput);
     hRow.appendChild(this.heightInput);
     hRow.appendChild(this.unit('mm'));
     // 크기 고정
     const sfLabel = this.checkboxLabel('크기 고정(S)');
     this.sizeFixedCheck = sfLabel.querySelector('input') as HTMLInputElement;
     hRow.appendChild(sfLabel);
+    const krLabel = this.checkboxLabel('비율 유지');
+    this.keepRatioCheck = krLabel.querySelector('input') as HTMLInputElement;
+    this.keepRatioCheck.checked = userSettings.getPicturePropsKeepRatio();
+    this.sizeLockControls.push(this.keepRatioCheck);
+    hRow.appendChild(krLabel);
     sizeFs.appendChild(hRow);
 
+    this.sizeFixedCheck.addEventListener('change', () => this.updateSizeProtectControls());
+
     // 비율 유지 이벤트
+    this.keepRatioCheck.addEventListener('change', () => {
+      userSettings.setPicturePropsKeepRatio(this.keepRatioCheck.checked);
+    });
     this.widthInput.addEventListener('input', () => {
-      if (this.originalWidth > 0) {
+      if (this.keepRatioCheck.checked && !this.syncingBasicSize && this.originalWidth > 0) {
         const ratio = this.originalHeight / this.originalWidth;
         const w = parseFloat(this.widthInput.value) || 0;
-        this.heightInput.value = (w * ratio).toFixed(2);
+        this.syncingBasicSize = true;
+        try {
+          this.heightInput.value = (w * ratio).toFixed(2);
+        } finally {
+          this.syncingBasicSize = false;
+        }
       }
     });
     this.heightInput.addEventListener('input', () => {
-      if (this.originalHeight > 0) {
+      if (this.keepRatioCheck.checked && !this.syncingBasicSize && this.originalHeight > 0) {
         const ratio = this.originalWidth / this.originalHeight;
         const h = parseFloat(this.heightInput.value) || 0;
-        this.widthInput.value = (h * ratio).toFixed(2);
+        this.syncingBasicSize = true;
+        try {
+          this.widthInput.value = (h * ratio).toFixed(2);
+        } finally {
+          this.syncingBasicSize = false;
+        }
       }
     });
 
@@ -451,8 +528,12 @@ export class PicturePropsDialog {
     const hPosRow = this.row();
     hPosRow.classList.add('pp-pos-detail');
     hPosRow.appendChild(this.label('가로(I):'));
+    // [Task #1282] 한컴은 자리차지(TopAndBottom) 그림의 가로 기준 칸에
+    // 실제 HorzRelTo 대신 "자리 차지"를 표시한다. 저장값은 textWrap 이므로
+    // OK 시에는 HorzRelTo 로 넘기지 않는다.
     this.horzRelSelect = this.selectEl([
-      ['Paper', '종이'], ['Page', '쪽'], ['Column', '단'],
+      ['TakePlace', '자리 차지'],
+      ['Paper', '종이'], ['Page', '쪽'], ['Column', '단'], ['Para', '문단'],
     ]);
     hPosRow.appendChild(this.horzRelSelect);
     hPosRow.appendChild(this.unit('의'));
@@ -472,7 +553,7 @@ export class PicturePropsDialog {
     vPosRow.classList.add('pp-pos-detail');
     vPosRow.appendChild(this.label('세로(V):'));
     this.vertRelSelect = this.selectEl([
-      ['Paper', '종이'], ['Page', '쪽'], ['Paragraph', '문단'],
+      ['Paper', '종이'], ['Page', '쪽'], ['Para', '문단'],
     ]);
     vPosRow.appendChild(this.vertRelSelect);
     vPosRow.appendChild(this.unit('의'));
@@ -492,12 +573,10 @@ export class PicturePropsDialog {
     optRow.classList.add('pp-pos-detail');
     const palLabel = this.checkboxLabel('쪽 영역 안으로 제한(B)');
     this.pageAreaLimitCheck = palLabel.querySelector('input') as HTMLInputElement;
-    this.pageAreaLimitCheck.disabled = true;
+    this.pageAreaLimitCheck.addEventListener('change', () => this.updateOverlapOption());
     optRow.appendChild(palLabel);
     const oaLabel = this.checkboxLabel('서로 겹침 허용(L)');
     this.overlapAllowCheck = oaLabel.querySelector('input') as HTMLInputElement;
-    this.overlapAllowCheck.checked = true;
-    this.overlapAllowCheck.disabled = true;
     optRow.appendChild(oaLabel);
     posFs.appendChild(optRow);
     this.posDetailEls.push(optRow);
@@ -773,6 +852,8 @@ export class PicturePropsDialog {
     row2.appendChild(this.lineWidthInput);
     row2.appendChild(this.unit('mm'));
     lineFs.appendChild(row2);
+
+    if (this.objectType === 'ole') return panel;
 
     // ── 화살표 ──
     const arrowFs = this.fieldset('화살표');
@@ -1405,17 +1486,19 @@ export class PicturePropsDialog {
     const fileFs = this.fieldset('파일 이름');
     panel.appendChild(fileFs);
     const fileRow = this.row();
-    const fileNameInput = document.createElement('input');
-    fileNameInput.type = 'text';
-    fileNameInput.className = 'dialog-input';
-    fileNameInput.style.width = '280px';
-    fileNameInput.readOnly = true;
-    fileNameInput.value = '(문서에 포함된 그림)';
-    fileRow.appendChild(fileNameInput);
+    // [Task #741 후속] 외부 file path 그림 영역 dialog 표시 영역. populateFromProps 영역
+    // 영역 props.externalPath 영역 보유 시 file path + embed=false 영역 갱신.
+    this.picFileNameInput = document.createElement('input');
+    this.picFileNameInput.type = 'text';
+    this.picFileNameInput.className = 'dialog-input';
+    this.picFileNameInput.style.width = '280px';
+    this.picFileNameInput.readOnly = true;
+    this.picFileNameInput.value = '(문서에 포함된 그림)';
+    fileRow.appendChild(this.picFileNameInput);
     const embedLabel = this.checkboxLabel('문서에 포함');
-    const embedCheck = embedLabel.querySelector('input') as HTMLInputElement;
-    embedCheck.checked = true;
-    embedCheck.disabled = true;
+    this.picEmbedCheck = embedLabel.querySelector('input') as HTMLInputElement;
+    this.picEmbedCheck.checked = true;
+    this.picEmbedCheck.disabled = true;
     fileRow.appendChild(embedLabel);
     fileFs.appendChild(fileRow);
 
@@ -1448,6 +1531,7 @@ export class PicturePropsDialog {
           this.picScaleYInput.value = String(p.pct);
         }
       });
+      this.sizeLockControls.push(btn);
       sxRow.appendChild(btn);
     }
     scaleFs.appendChild(sxRow);
@@ -1456,6 +1540,7 @@ export class PicturePropsDialog {
     syRow.appendChild(this.label('세로'));
     this.picScaleYInput = this.numberInput(1, 1000, 0.01);
     this.picScaleYInput.style.width = '70px';
+    this.sizeLockControls.push(this.picScaleXInput, this.picScaleYInput);
     syRow.appendChild(this.picScaleYInput);
     syRow.appendChild(this.unit('%'));
     scaleFs.appendChild(syRow);
@@ -1463,6 +1548,7 @@ export class PicturePropsDialog {
     const ratioRow = this.row();
     const ratioLabel = this.checkboxLabel('가로 세로 같은 비율 유지');
     this.picKeepRatioCheck = ratioLabel.querySelector('input') as HTMLInputElement;
+    this.sizeLockControls.push(this.picKeepRatioCheck);
     ratioRow.appendChild(ratioLabel);
     const resetBtn = document.createElement('button');
     resetBtn.className = 'dialog-btn';
@@ -1479,7 +1565,9 @@ export class PicturePropsDialog {
       if (this.picEffectRadios[0]) this.picEffectRadios[0].checked = true;
       this.picBrightnessInput.value = '0';
       this.picContrastInput.value = '0';
+      this.picTransparencyInput.value = '0';
     });
+    this.sizeLockControls.push(resetBtn);
     ratioRow.appendChild(resetBtn);
     scaleFs.appendChild(ratioRow);
 
@@ -1647,10 +1735,9 @@ export class PicturePropsDialog {
     panel.appendChild(transFs);
     const transRow = this.row();
     transRow.appendChild(this.label('투명도'));
-    const transInput = this.numberInput(0, 100, 1);
-    transInput.value = '0';
-    transInput.disabled = true;
-    transRow.appendChild(transInput);
+    this.picTransparencyInput = this.numberInput(0, 100, 1);
+    this.picTransparencyInput.value = '0';
+    transRow.appendChild(this.picTransparencyInput);
     transRow.appendChild(this.unit('%'));
     transFs.appendChild(transRow);
 
@@ -1843,22 +1930,30 @@ export class PicturePropsDialog {
   private handleOk(): void {
     if (!this.props) { this.hide(); return; }
     const updated: Record<string, unknown> = {};
+    const sizeProtect = this.sizeFixedCheck.checked;
+
+    if (sizeProtect !== (this.props.sizeProtect ?? false)) {
+      updated['sizeProtect'] = sizeProtect;
+    }
 
     // 크기
-    const newW = mmToHwp(parseFloat(this.widthInput.value) || 0);
-    const newH = mmToHwp(parseFloat(this.heightInput.value) || 0);
-    if (newW !== this.props.width) updated['width'] = newW;
-    if (newH !== this.props.height) updated['height'] = newH;
+    if (!sizeProtect) {
+      const newW = mmToHwp(parseFloat(this.widthInput.value) || 0);
+      const newH = mmToHwp(parseFloat(this.heightInput.value) || 0);
+      if (newW !== this.props.width) updated['width'] = newW;
+      if (newH !== this.props.height) updated['height'] = newH;
+    }
 
     // 위치
     const tac = this.treatAsCharCheck.checked;
     if (tac !== this.props.treatAsChar) updated['treatAsChar'] = tac;
 
     if (!tac) {
-      const tw = this.getSelectedWrap();
-      if (tw !== this.props.textWrap) updated['textWrap'] = tw;
+      let tw = this.getSelectedWrap();
       const hr = this.horzRelSelect.value;
-      if (hr !== this.props.horzRelTo) updated['horzRelTo'] = hr;
+      if (hr === 'TakePlace') tw = 'TopAndBottom';
+      if (tw !== this.props.textWrap) updated['textWrap'] = tw;
+      if (hr !== 'TakePlace' && hr !== this.props.horzRelTo) updated['horzRelTo'] = hr;
       const ha = this.horzAlignSelect.value;
       if (ha !== this.props.horzAlign) updated['horzAlign'] = ha;
       const ho = mmToHwp(parseFloat(this.horzOffsetInput.value) || 0);
@@ -1869,6 +1964,14 @@ export class PicturePropsDialog {
       if (va !== this.props.vertAlign) updated['vertAlign'] = va;
       const vo = mmToHwp(parseFloat(this.vertOffsetInput.value) || 0);
       if (vo !== this.props.vertOffset) updated['vertOffset'] = vo;
+      const restrictInPage = this.pageAreaLimitCheck.checked;
+      if (restrictInPage !== (this.props.restrictInPage ?? true)) {
+        updated['restrictInPage'] = restrictInPage;
+      }
+      const allowOverlap = this.overlapAllowCheck.checked;
+      if (allowOverlap !== (this.props.allowOverlap ?? false)) {
+        updated['allowOverlap'] = allowOverlap;
+      }
     }
 
     // 기타
@@ -1876,35 +1979,70 @@ export class PicturePropsDialog {
     if (desc !== this.props.description) updated['description'] = desc;
 
     // Shape(글상자) 전용 속성
-    if ((this.objectType === 'shape' || this.objectType === 'line') && this.shapeProps) {
-      // 글상자 여백
-      const ml = mmToHwp(parseFloat(this.tbMarginLeftInput?.value) || 0);
-      const mr = mmToHwp(parseFloat(this.tbMarginRightInput?.value) || 0);
-      const mt = mmToHwp(parseFloat(this.tbMarginTopInput?.value) || 0);
-      const mb = mmToHwp(parseFloat(this.tbMarginBottomInput?.value) || 0);
-      if (ml !== (this.shapeProps.tbMarginLeft ?? 0)) updated['tbMarginLeft'] = ml;
-      if (mr !== (this.shapeProps.tbMarginRight ?? 0)) updated['tbMarginRight'] = mr;
-      if (mt !== (this.shapeProps.tbMarginTop ?? 0)) updated['tbMarginTop'] = mt;
-      if (mb !== (this.shapeProps.tbMarginBottom ?? 0)) updated['tbMarginBottom'] = mb;
+    if ((this.objectType === 'shape' || this.objectType === 'line' || this.objectType === 'group' || this.objectType === 'ole') && this.shapeProps) {
+      const isOle = this.objectType === 'ole';
 
-      // 세로 정렬 (아이콘 버튼)
-      const activeVa = this.tbVertAlignBtns.find(b => b.classList.contains('active'));
-      const vaVal = activeVa?.dataset.value ?? 'Top';
-      if (vaVal !== (this.shapeProps.tbVerticalAlign ?? 'Top')) updated['tbVerticalAlign'] = vaVal;
+      // OLE는 한컴처럼 여백/캡션과 선 범위만 저장한다.
+      if (isOle) {
+        if (this.outerMarginLeftInput) {
+          const ml = mmToHwp(parseFloat(this.outerMarginLeftInput.value) || 0);
+          if (ml !== (this.props.outerMarginLeft ?? 0)) updated['outerMarginLeft'] = ml;
+        }
+        if (this.outerMarginRightInput) {
+          const mr = mmToHwp(parseFloat(this.outerMarginRightInput.value) || 0);
+          if (mr !== (this.props.outerMarginRight ?? 0)) updated['outerMarginRight'] = mr;
+        }
+        if (this.outerMarginTopInput) {
+          const mt = mmToHwp(parseFloat(this.outerMarginTopInput.value) || 0);
+          if (mt !== (this.props.outerMarginTop ?? 0)) updated['outerMarginTop'] = mt;
+        }
+        if (this.outerMarginBottomInput) {
+          const mb = mmToHwp(parseFloat(this.outerMarginBottomInput.value) || 0);
+          if (mb !== (this.props.outerMarginBottom ?? 0)) updated['outerMarginBottom'] = mb;
+        }
+        if (this.captionBtns.length > 0) {
+          const activeIdx = this.captionBtns.findIndex(b => b.classList.contains('active'));
+          const hasCaption = activeIdx >= 0 && activeIdx !== 4;
+          updated['hasCaption'] = hasCaption;
+          if (hasCaption) {
+            const { direction, vertAlign } = this.gridIndexToCaption(activeIdx);
+            updated['captionDirection'] = direction;
+            updated['captionVertAlign'] = vertAlign;
+            updated['captionWidth'] = mmToHwp(parseFloat(this.captionSizeInput.value) || 0);
+            updated['captionSpacing'] = mmToHwp(parseFloat(this.captionGapInput.value) || 0);
+            updated['captionIncludeMargin'] = this.captionExpandCheck.checked;
+          }
+        }
+      } else {
+        // 글상자 여백
+        const ml = mmToHwp(parseFloat(this.tbMarginLeftInput?.value) || 0);
+        const mr = mmToHwp(parseFloat(this.tbMarginRightInput?.value) || 0);
+        const mt = mmToHwp(parseFloat(this.tbMarginTopInput?.value) || 0);
+        const mb = mmToHwp(parseFloat(this.tbMarginBottomInput?.value) || 0);
+        if (ml !== (this.shapeProps.tbMarginLeft ?? 0)) updated['tbMarginLeft'] = ml;
+        if (mr !== (this.shapeProps.tbMarginRight ?? 0)) updated['tbMarginRight'] = mr;
+        if (mt !== (this.shapeProps.tbMarginTop ?? 0)) updated['tbMarginTop'] = mt;
+        if (mb !== (this.shapeProps.tbMarginBottom ?? 0)) updated['tbMarginBottom'] = mb;
 
-      // 회전
-      if (this.rotationInput && !this.rotationInput.disabled) {
-        const rot = parseInt(this.rotationInput.value) || 0;
-        if (rot !== (this.shapeProps.rotationAngle ?? 0)) updated['rotationAngle'] = rot;
-      }
-      // 대칭
-      if (this.horzFlipCheck && !this.horzFlipCheck.disabled) {
-        const hf = this.horzFlipCheck.checked;
-        if (hf !== !!this.shapeProps.horzFlip) updated['horzFlip'] = hf;
-      }
-      if (this.vertFlipCheck && !this.vertFlipCheck.disabled) {
-        const vf = this.vertFlipCheck.checked;
-        if (vf !== !!this.shapeProps.vertFlip) updated['vertFlip'] = vf;
+        // 세로 정렬 (아이콘 버튼)
+        const activeVa = this.tbVertAlignBtns.find(b => b.classList.contains('active'));
+        const vaVal = activeVa?.dataset.value ?? 'Top';
+        if (vaVal !== (this.shapeProps.tbVerticalAlign ?? 'Top')) updated['tbVerticalAlign'] = vaVal;
+
+        // 회전
+        if (this.rotationInput && !this.rotationInput.disabled) {
+          const rot = parseInt(this.rotationInput.value) || 0;
+          if (rot !== (this.shapeProps.rotationAngle ?? 0)) updated['rotationAngle'] = rot;
+        }
+        // 대칭
+        if (this.horzFlipCheck && !this.horzFlipCheck.disabled) {
+          const hf = this.horzFlipCheck.checked;
+          if (hf !== !!this.shapeProps.horzFlip) updated['horzFlip'] = hf;
+        }
+        if (this.vertFlipCheck && !this.vertFlipCheck.disabled) {
+          const vf = this.vertFlipCheck.checked;
+          if (vf !== !!this.shapeProps.vertFlip) updated['vertFlip'] = vf;
+        }
       }
 
       // 선 (색/굵기/종류/끝모양/화살표)
@@ -1924,28 +2062,28 @@ export class PicturePropsDialog {
         const le = parseInt(this.lineEndSelect.value) || 0;
         if (le !== (this.shapeProps.lineEndShape ?? 0)) updated['lineEndShape'] = le;
       }
-      if (this.arrowStartSelect) {
+      if (!isOle && this.arrowStartSelect) {
         const as_ = parseInt(this.arrowStartSelect.value) || 0;
         if (as_ !== (this.shapeProps.arrowStart ?? 0)) updated['arrowStart'] = as_;
       }
-      if (this.arrowEndSelect) {
+      if (!isOle && this.arrowEndSelect) {
         const ae = parseInt(this.arrowEndSelect.value) || 0;
         if (ae !== (this.shapeProps.arrowEnd ?? 0)) updated['arrowEnd'] = ae;
       }
-      if (this.arrowStartSizeSelect) {
+      if (!isOle && this.arrowStartSizeSelect) {
         const ass = parseInt(this.arrowStartSizeSelect.value) || 0;
         if (ass !== (this.shapeProps.arrowStartSize ?? 0)) updated['arrowStartSize'] = ass;
       }
-      if (this.arrowEndSizeSelect) {
+      if (!isOle && this.arrowEndSizeSelect) {
         const aes = parseInt(this.arrowEndSizeSelect.value) || 0;
         if (aes !== (this.shapeProps.arrowEndSize ?? 0)) updated['arrowEndSize'] = aes;
       }
 
       // 모서리 곡률
-      if (this.cornerCustomRadio?.checked && this.cornerCustomInput) {
+      if (!isOle && this.cornerCustomRadio?.checked && this.cornerCustomInput) {
         const rr = parseInt(this.cornerCustomInput.value) || 0;
         if (rr !== (this.shapeProps.roundRate ?? 0)) updated['roundRate'] = rr;
-      } else {
+      } else if (!isOle) {
         const activeCorner = this.cornerBtns.findIndex(b => b.classList.contains('active'));
         let rr = 0;
         if (activeCorner === 1) rr = 20;       // 둥근 모양
@@ -1954,37 +2092,39 @@ export class PicturePropsDialog {
       }
 
       // 채우기
-      let fillType = 'none';
-      if (this.fillSolidRadio?.checked) fillType = 'solid';
-      else if (this.fillGradientRadio?.checked) fillType = 'gradient';
-      if (fillType !== (this.shapeProps.fillType ?? 'none')) updated['fillType'] = fillType;
+      if (!isOle) {
+        let fillType = 'none';
+        if (this.fillSolidRadio?.checked) fillType = 'solid';
+        else if (this.fillGradientRadio?.checked) fillType = 'gradient';
+        if (fillType !== (this.shapeProps.fillType ?? 'none')) updated['fillType'] = fillType;
 
-      if (fillType === 'solid' && this.solidFaceColor) {
-        // 항상 전송 — SolidFill이 없을 수 있으므로 비교 생략
-        updated['fillBgColor'] = hexToColorRef(this.solidFaceColor.value);
-        updated['fillPatColor'] = hexToColorRef(this.solidPatColor.value);
-        if (this.solidPatternSelect) {
-          updated['fillPatType'] = parseInt(this.solidPatternSelect.value) || -1;
+        if (fillType === 'solid' && this.solidFaceColor) {
+          // 항상 전송 — SolidFill이 없을 수 있으므로 비교 생략
+          updated['fillBgColor'] = hexToColorRef(this.solidFaceColor.value);
+          updated['fillPatColor'] = hexToColorRef(this.solidPatColor.value);
+          if (this.solidPatternSelect) {
+            updated['fillPatType'] = parseInt(this.solidPatternSelect.value) || -1;
+          }
+        }
+
+        if (fillType === 'gradient') {
+          if (this.gradTypeSelect) updated['gradientType'] = parseInt(this.gradTypeSelect.value) || 1;
+          if (this.gradTiltInput) updated['gradientAngle'] = parseInt(this.gradTiltInput.value) || 0;
+          if (this.gradCenterXInput) updated['gradientCenterX'] = parseInt(this.gradCenterXInput.value) || 0;
+          if (this.gradCenterYInput) updated['gradientCenterY'] = parseInt(this.gradCenterYInput.value) || 0;
+          if (this.gradBlurInput) updated['gradientBlur'] = parseInt(this.gradBlurInput.value) || 0;
+        }
+
+        // 채우기 투명도 (한컴 호환: alpha=0 → 불투명, alpha=255 → 완전 투명)
+        if (this.fillTransInput && (fillType === 'solid' || fillType === 'gradient')) {
+          const transPct = parseInt(this.fillTransInput.value) || 0;
+          const alpha = Math.round(transPct * 255 / 100);
+          updated['fillAlpha'] = alpha;
         }
       }
 
-      if (fillType === 'gradient') {
-        if (this.gradTypeSelect) updated['gradientType'] = parseInt(this.gradTypeSelect.value) || 1;
-        if (this.gradTiltInput) updated['gradientAngle'] = parseInt(this.gradTiltInput.value) || 0;
-        if (this.gradCenterXInput) updated['gradientCenterX'] = parseInt(this.gradCenterXInput.value) || 0;
-        if (this.gradCenterYInput) updated['gradientCenterY'] = parseInt(this.gradCenterYInput.value) || 0;
-        if (this.gradBlurInput) updated['gradientBlur'] = parseInt(this.gradBlurInput.value) || 0;
-      }
-
-      // 채우기 투명도 (한컴 호환: alpha=0 → 불투명, alpha=255 → 완전 투명)
-      if (this.fillTransInput && (fillType === 'solid' || fillType === 'gradient')) {
-        const transPct = parseInt(this.fillTransInput.value) || 0;
-        const alpha = Math.round(transPct * 255 / 100);
-        updated['fillAlpha'] = alpha;
-      }
-
       // 그림자
-      if (this.shadowTypeBtns.length > 0) {
+      if (!isOle && this.shadowTypeBtns.length > 0) {
         const activeIdx = this.shadowTypeBtns.findIndex(b => b.classList.contains('active'));
         const shadowType = activeIdx > 0 ? activeIdx : 0;
         updated['shadowType'] = shadowType;
@@ -2005,7 +2145,7 @@ export class PicturePropsDialog {
 
       // 회전/대칭
       if (this.rotationInput && !this.rotationInput.disabled) {
-        const rot = (parseInt(this.rotationInput.value) || 0) * 100; // 도→raw
+        const rot = parseInt(this.rotationInput.value) || 0;
         if (rot !== (pp.rotationAngle ?? 0)) updated['rotationAngle'] = rot;
       }
       if (this.horzFlipCheck && !this.horzFlipCheck.disabled) {
@@ -2061,7 +2201,7 @@ export class PicturePropsDialog {
       }
 
       // 그림 탭 — 확대/축소 → 크기 변환
-      if (this.picScaleXInput && pp.originalWidth > 0) {
+      if (!sizeProtect && this.picScaleXInput && pp.originalWidth > 0) {
         const scaleX = parseFloat(this.picScaleXInput.value) || 100;
         const scaleY = parseFloat(this.picScaleYInput.value) || 100;
         const newW = Math.round(pp.originalWidth * scaleX / 100);
@@ -2111,15 +2251,60 @@ export class PicturePropsDialog {
         const ct = parseInt(this.picContrastInput.value) || 0;
         if (ct !== (pp.contrast ?? 0)) updated['contrast'] = ct;
       }
+      if (this.picTransparencyInput) {
+        const transparency = Math.max(0, Math.min(100, parseInt(this.picTransparencyInput.value) || 0));
+        if (transparency !== (pp.transparency ?? 0)) updated['transparency'] = transparency;
+      }
     }
 
     if (Object.keys(updated).length > 0) {
-      if (this.objectType === 'shape' || this.objectType === 'line') {
-        this.wasm.setShapeProperties(this.sec, this.para, this.ci, updated);
+      // setter 분기:
+      // - shape/line/group/ole: cellPath > 외부
+      // - picture: headerFooter > cellPath > 외부
+      //   [Task #1151 v4] 셀 안 inline picture 는 setCellPicturePropertiesByPath
+      //   wasm API 호출. 본문 picture (cellPath 없음) 는 기존 setPictureProperties.
+      const applyProps = () => {
+        if (this.objectType === 'shape' || this.objectType === 'line' || this.objectType === 'group' || this.objectType === 'ole') {
+          if (this.cellPath) {
+            this.wasm.setCellShapePropertiesByPath(
+              this.sec, this.para, this.cellPath, this.innerControlIdx, updated,
+            );
+          } else {
+            this.wasm.setShapeProperties(this.sec, this.para, this.ci, updated);
+          }
+        } else if (this.headerFooter) {
+          // [Task #825] 머리말/꼬리말 그림은 별도 API — 5-tuple lookup. 캡션 신규
+          // 생성은 미지원 (set_header_footer_picture_properties_native 가 NotSupported
+          // 에러 반환 — 본 dialog 에서는 일반 속성 변경만 허용).
+          this.wasm.setHeaderFooterPictureProperties(
+            this.sec, this.headerFooter.outerParaIdx, this.headerFooter.outerControlIdx,
+            this.para, this.ci, updated,
+          );
+        } else if (this.cellPath) {
+          // [Task #1151 v4] 셀 안 inline picture — by_path API 호출.
+          this.wasm.setCellPicturePropertiesByPath(
+            this.sec, this.para, this.cellPath, this.innerControlIdx, updated,
+          );
+        } else {
+          this.wasm.setPictureProperties(this.sec, this.para, this.ci, updated);
+        }
+      };
+      // 개체 속성 변경도 undo 대상이다 — 편집 라우터를 통과시켜 스냅샷으로
+      // 기록한다 (#1320 계약). services 미주입 환경에서만 직접 적용 fallback.
+      const ih = this.services?.getInputHandler();
+      if (ih) {
+        ih.executeOperation({
+          kind: 'snapshot',
+          operationType: 'objectProps',
+          operation: () => {
+            applyProps();
+            return ih.getCursorPosition();
+          },
+        });
       } else {
-        this.wasm.setPictureProperties(this.sec, this.para, this.ci, updated);
+        applyProps();
+        this.eventBus.emit('document-changed');
       }
-      this.eventBus.emit('document-changed');
     }
     this.hide();
   }
@@ -2130,48 +2315,95 @@ export class PicturePropsDialog {
 
   private populateFromProps(): void {
     if (!this.props) return;
+    // [Task #741 후속 — 한컴 viewer 정합] 외부 file path 그림 영역 dialog 표시 영역.
+    // props.externalPath 영역 영역 그대로 표시 (resolved path 영역, 한컴 viewer 영역 영역
+    // 원본 절대 경로 영역 영역 access 부재 시 HWP file 영역 영역 같은 dir 영역 image 영역
+    // 영역 영역 path 영역 영역 갱신 — populate_external_images_from_dir / inject_external_image
+    // 영역 영역 변경 영역 ~~basename~~ → resolved local path 영역 영역).
+    if (this.picFileNameInput && this.picEmbedCheck) {
+      if (this.props.externalPath) {
+        this.picFileNameInput.value = this.props.externalPath;
+        this.picEmbedCheck.checked = false;
+      } else {
+        this.picFileNameInput.value = '(문서에 포함된 그림)';
+        this.picEmbedCheck.checked = true;
+      }
+    }
     this.widthInput.value = hwpToMm(this.props.width).toFixed(2);
     this.heightInput.value = hwpToMm(this.props.height).toFixed(2);
+    this.sizeFixedCheck.checked = this.props.sizeProtect ?? false;
     this.treatAsCharCheck.checked = this.props.treatAsChar;
     this.selectWrap(this.wrapValues.indexOf(this.props.textWrap));
-    this.horzRelSelect.value = this.props.horzRelTo;
+    this.horzRelSelect.value = this.props.textWrap === 'TopAndBottom'
+      ? 'TakePlace'
+      : this.props.horzRelTo;
     this.horzAlignSelect.value = this.props.horzAlign;
     this.horzOffsetInput.value = hwpToMm(this.props.horzOffset).toFixed(2);
     this.vertRelSelect.value = this.props.vertRelTo;
     this.vertAlignSelect.value = this.props.vertAlign;
     this.vertOffsetInput.value = hwpToMm(this.props.vertOffset).toFixed(2);
+    this.pageAreaLimitCheck.checked = this.props.restrictInPage ?? true;
+    this.overlapAllowCheck.checked = this.props.allowOverlap ?? false;
     this.descInput.value = this.props.description;
     this.skewHInput.value = '0';
     this.skewVInput.value = '0';
     this.updatePositionVisibility();
+    this.updateOverlapOption();
 
     // Shape/Line 전용 필드
-    if ((this.objectType === 'shape' || this.objectType === 'line') && this.shapeProps) {
+    if ((this.objectType === 'shape' || this.objectType === 'line' || this.objectType === 'group' || this.objectType === 'ole') && this.shapeProps) {
       const sp = this.shapeProps;
+      const isOle = this.objectType === 'ole';
 
       // 기본 탭 — 회전/대칭
       if (this.rotationInput) {
         this.rotationInput.value = String(sp.rotationAngle ?? 0);
-        this.rotationInput.disabled = false;
+        this.rotationInput.disabled = isOle;
       }
       if (this.horzFlipCheck) {
         this.horzFlipCheck.checked = !!sp.horzFlip;
-        this.horzFlipCheck.disabled = false;
+        this.horzFlipCheck.disabled = isOle;
       }
       if (this.vertFlipCheck) {
         this.vertFlipCheck.checked = !!sp.vertFlip;
-        this.vertFlipCheck.disabled = false;
+        this.vertFlipCheck.disabled = isOle;
       }
 
-      // 글상자 탭 — 여백
-      if (this.tbMarginLeftInput) this.tbMarginLeftInput.value = hwpToMm(sp.tbMarginLeft ?? 510).toFixed(2);
-      if (this.tbMarginRightInput) this.tbMarginRightInput.value = hwpToMm(sp.tbMarginRight ?? 510).toFixed(2);
-      if (this.tbMarginTopInput) this.tbMarginTopInput.value = hwpToMm(sp.tbMarginTop ?? 141).toFixed(2);
-      if (this.tbMarginBottomInput) this.tbMarginBottomInput.value = hwpToMm(sp.tbMarginBottom ?? 141).toFixed(2);
+      if (isOle) {
+        if (this.outerMarginLeftInput) this.outerMarginLeftInput.value = hwpToMm(this.props.outerMarginLeft ?? 0).toFixed(2);
+        if (this.outerMarginRightInput) this.outerMarginRightInput.value = hwpToMm(this.props.outerMarginRight ?? 0).toFixed(2);
+        if (this.outerMarginTopInput) this.outerMarginTopInput.value = hwpToMm(this.props.outerMarginTop ?? 0).toFixed(2);
+        if (this.outerMarginBottomInput) this.outerMarginBottomInput.value = hwpToMm(this.props.outerMarginBottom ?? 0).toFixed(2);
+        if (this.captionBtns.length > 0) {
+          this.captionBtns.forEach(b => b.disabled = false);
+          this.captionSizeInput.disabled = false;
+          this.captionGapInput.disabled = false;
+          this.captionExpandCheck.disabled = false;
 
-      // 글상자 탭 — 세로 정렬 아이콘 버튼
-      const va = sp.tbVerticalAlign ?? 'Top';
-      this.tbVertAlignBtns.forEach(b => b.classList.toggle('active', b.dataset.value === va));
+          if (this.props.hasCaption) {
+            const gridIdx = this.captionGridIndex(this.props.captionDirection, this.props.captionVertAlign);
+            this.captionBtns.forEach((b, j) => b.classList.toggle('active', j === gridIdx));
+            this.captionSizeInput.value = hwpToMm(this.props.captionWidth ?? 0).toFixed(2);
+            this.captionGapInput.value = hwpToMm(this.props.captionSpacing ?? 0).toFixed(2);
+            this.captionExpandCheck.checked = !!this.props.captionIncludeMargin;
+          } else {
+            this.captionBtns.forEach(b => b.classList.remove('active'));
+            this.captionSizeInput.value = '30.00';
+            this.captionGapInput.value = '3.00';
+            this.captionExpandCheck.checked = false;
+          }
+        }
+      } else {
+        // 글상자 탭 — 여백
+        if (this.tbMarginLeftInput) this.tbMarginLeftInput.value = hwpToMm(sp.tbMarginLeft ?? 510).toFixed(2);
+        if (this.tbMarginRightInput) this.tbMarginRightInput.value = hwpToMm(sp.tbMarginRight ?? 510).toFixed(2);
+        if (this.tbMarginTopInput) this.tbMarginTopInput.value = hwpToMm(sp.tbMarginTop ?? 141).toFixed(2);
+        if (this.tbMarginBottomInput) this.tbMarginBottomInput.value = hwpToMm(sp.tbMarginBottom ?? 141).toFixed(2);
+
+        // 글상자 탭 — 세로 정렬 아이콘 버튼
+        const va = sp.tbVerticalAlign ?? 'Top';
+        this.tbVertAlignBtns.forEach(b => b.classList.toggle('active', b.dataset.value === va));
+      }
 
       // 선 탭 — borderColor/borderWidth
       if (this.lineColorInput && sp.borderColor !== undefined) {
@@ -2184,13 +2416,13 @@ export class PicturePropsDialog {
       // 선 탭 — 선 종류/끝모양/화살표
       if (this.lineTypeSelect && sp.lineType !== undefined) this.lineTypeSelect.value = String(sp.lineType);
       if (this.lineEndSelect && sp.lineEndShape !== undefined) this.lineEndSelect.value = String(sp.lineEndShape);
-      if (this.arrowStartSelect && sp.arrowStart !== undefined) this.arrowStartSelect.value = String(sp.arrowStart);
-      if (this.arrowEndSelect && sp.arrowEnd !== undefined) this.arrowEndSelect.value = String(sp.arrowEnd);
-      if (this.arrowStartSizeSelect && sp.arrowStartSize !== undefined) this.arrowStartSizeSelect.value = String(sp.arrowStartSize);
-      if (this.arrowEndSizeSelect && sp.arrowEndSize !== undefined) this.arrowEndSizeSelect.value = String(sp.arrowEndSize);
+      if (!isOle && this.arrowStartSelect && sp.arrowStart !== undefined) this.arrowStartSelect.value = String(sp.arrowStart);
+      if (!isOle && this.arrowEndSelect && sp.arrowEnd !== undefined) this.arrowEndSelect.value = String(sp.arrowEnd);
+      if (!isOle && this.arrowStartSizeSelect && sp.arrowStartSize !== undefined) this.arrowStartSizeSelect.value = String(sp.arrowStartSize);
+      if (!isOle && this.arrowEndSizeSelect && sp.arrowEndSize !== undefined) this.arrowEndSizeSelect.value = String(sp.arrowEndSize);
 
       // 선 탭 — 모서리 곡률
-      if (this.cornerBtns.length > 0 && sp.roundRate !== undefined) {
+      if (!isOle && this.cornerBtns.length > 0 && sp.roundRate !== undefined) {
         const rr = sp.roundRate;
         if (rr === 0) {
           this.cornerBtns.forEach((b, i) => b.classList.toggle('active', i === 0));
@@ -2207,67 +2439,69 @@ export class PicturePropsDialog {
         }
       }
 
-      // 채우기 탭 — fillType
-      const ft = sp.fillType ?? 'none';
-      if (this.fillNoneRadio) this.fillNoneRadio.checked = (ft === 'none');
-      if (this.fillSolidRadio) this.fillSolidRadio.checked = (ft === 'solid');
-      if (this.fillGradientRadio) this.fillGradientRadio.checked = (ft === 'gradient');
+      if (!isOle) {
+        // 채우기 탭 — fillType
+        const ft = sp.fillType ?? 'none';
+        if (this.fillNoneRadio) this.fillNoneRadio.checked = (ft === 'none');
+        if (this.fillSolidRadio) this.fillSolidRadio.checked = (ft === 'solid');
+        if (this.fillGradientRadio) this.fillGradientRadio.checked = (ft === 'gradient');
 
-      // 채우기 — 단색
-      if (this.solidFaceColor && sp.fillBgColor !== undefined) {
-        this.solidFaceColor.value = colorRefToHex(sp.fillBgColor);
-      }
-      if (this.solidPatColor && sp.fillPatColor !== undefined) {
-        this.solidPatColor.value = colorRefToHex(sp.fillPatColor);
-      }
-      if (this.solidPatternSelect && sp.fillPatType !== undefined) {
-        // fillPatType은 정수 — select 값으로 매핑은 추후 세분화
-      }
-
-      // 채우기 — 그러데이션
-      if (this.gradTypeSelect && sp.gradientType !== undefined) {
-        // gradientType 정수 → select 인덱스 매핑은 추후 세분화
-      }
-      if (this.gradCenterXInput && sp.gradientCenterX !== undefined) this.gradCenterXInput.value = String(sp.gradientCenterX);
-      if (this.gradCenterYInput && sp.gradientCenterY !== undefined) this.gradCenterYInput.value = String(sp.gradientCenterY);
-      if (this.gradBlurInput && sp.gradientBlur !== undefined) this.gradBlurInput.value = String(sp.gradientBlur);
-      if (this.gradTiltInput && sp.gradientAngle !== undefined) this.gradTiltInput.value = String(sp.gradientAngle);
-
-      // 채우기 — 투명도 (한컴 호환: alpha=0 → 불투명, alpha=255 → 완전 투명)
-      if (this.fillTransInput && sp.fillAlpha !== undefined) {
-        const pct = Math.round(sp.fillAlpha * 100 / 255);
-        this.fillTransInput.value = String(pct);
-        this.fillTransInput.disabled = false;
-      }
-
-      // 그림자 탭 초기화
-      if (this.shadowTypeBtns.length > 0) {
-        const st = (sp as any).shadowType ?? 0;
-        this.shadowTypeBtns.forEach((b, i) => b.classList.toggle('active', i === st));
-        const enabled = st > 0;
-        this.shadowColorInput.disabled = !enabled;
-        this.shadowHInput.disabled = !enabled;
-        this.shadowVInput.disabled = !enabled;
-        this.shadowDirBtns.forEach(b => b.disabled = !enabled);
-        if ((sp as any).shadowColor !== undefined) {
-          this.shadowColorInput.value = colorRefToHex((sp as any).shadowColor);
+        // 채우기 — 단색
+        if (this.solidFaceColor && sp.fillBgColor !== undefined) {
+          this.solidFaceColor.value = colorRefToHex(sp.fillBgColor);
         }
-        if ((sp as any).shadowOffsetX !== undefined) {
-          this.shadowHInput.value = hwpToMm((sp as any).shadowOffsetX).toFixed(1);
+        if (this.solidPatColor && sp.fillPatColor !== undefined) {
+          this.solidPatColor.value = colorRefToHex(sp.fillPatColor);
         }
-        if ((sp as any).shadowOffsetY !== undefined) {
-          this.shadowVInput.value = hwpToMm((sp as any).shadowOffsetY).toFixed(1);
+        if (this.solidPatternSelect && sp.fillPatType !== undefined) {
+          // fillPatType은 정수 — select 값으로 매핑은 추후 세분화
         }
-      }
 
-      // 채우기 영역 활성화 상태 업데이트
-      if (this.solidArea) {
-        const isSolid = ft === 'solid';
-        const isGrad = ft === 'gradient';
-        this.solidArea.style.opacity = isSolid ? '1' : '0.4';
-        this.gradientArea.style.opacity = isGrad ? '1' : '0.4';
-        this.setAreaDisabled(this.solidArea, !isSolid);
-        this.setAreaDisabled(this.gradientArea, !isGrad);
+        // 채우기 — 그러데이션
+        if (this.gradTypeSelect && sp.gradientType !== undefined) {
+          // gradientType 정수 → select 인덱스 매핑은 추후 세분화
+        }
+        if (this.gradCenterXInput && sp.gradientCenterX !== undefined) this.gradCenterXInput.value = String(sp.gradientCenterX);
+        if (this.gradCenterYInput && sp.gradientCenterY !== undefined) this.gradCenterYInput.value = String(sp.gradientCenterY);
+        if (this.gradBlurInput && sp.gradientBlur !== undefined) this.gradBlurInput.value = String(sp.gradientBlur);
+        if (this.gradTiltInput && sp.gradientAngle !== undefined) this.gradTiltInput.value = String(sp.gradientAngle);
+
+        // 채우기 — 투명도 (한컴 호환: alpha=0 → 불투명, alpha=255 → 완전 투명)
+        if (this.fillTransInput && sp.fillAlpha !== undefined) {
+          const pct = Math.round(sp.fillAlpha * 100 / 255);
+          this.fillTransInput.value = String(pct);
+          this.fillTransInput.disabled = false;
+        }
+
+        // 그림자 탭 초기화
+        if (this.shadowTypeBtns.length > 0) {
+          const st = (sp as any).shadowType ?? 0;
+          this.shadowTypeBtns.forEach((b, i) => b.classList.toggle('active', i === st));
+          const enabled = st > 0;
+          this.shadowColorInput.disabled = !enabled;
+          this.shadowHInput.disabled = !enabled;
+          this.shadowVInput.disabled = !enabled;
+          this.shadowDirBtns.forEach(b => b.disabled = !enabled);
+          if ((sp as any).shadowColor !== undefined) {
+            this.shadowColorInput.value = colorRefToHex((sp as any).shadowColor);
+          }
+          if ((sp as any).shadowOffsetX !== undefined) {
+            this.shadowHInput.value = hwpToMm((sp as any).shadowOffsetX).toFixed(1);
+          }
+          if ((sp as any).shadowOffsetY !== undefined) {
+            this.shadowVInput.value = hwpToMm((sp as any).shadowOffsetY).toFixed(1);
+          }
+        }
+
+        // 채우기 영역 활성화 상태 업데이트
+        if (this.solidArea) {
+          const isSolid = ft === 'solid';
+          const isGrad = ft === 'gradient';
+          this.solidArea.style.opacity = isSolid ? '1' : '0.4';
+          this.gradientArea.style.opacity = isGrad ? '1' : '0.4';
+          this.setAreaDisabled(this.solidArea, !isSolid);
+          this.setAreaDisabled(this.gradientArea, !isGrad);
+        }
       }
     } else {
       // 그림 개체일 때
@@ -2275,7 +2509,7 @@ export class PicturePropsDialog {
 
       // 기본 탭 — 회전/대칭 활성화
       if (this.rotationInput) {
-        this.rotationInput.value = String(Math.round((pp.rotationAngle ?? 0) / 100));
+        this.rotationInput.value = String(pp.rotationAngle ?? 0);
         this.rotationInput.disabled = false;
       }
       if (this.horzFlipCheck) {
@@ -2358,7 +2592,27 @@ export class PicturePropsDialog {
       if (this.picWatermarkCheck) {
         this.picWatermarkCheck.checked = (pp.brightness === 70 && pp.contrast === -50);
       }
+      if (this.picTransparencyInput) {
+        this.picTransparencyInput.value = String(pp.transparency ?? 0);
+        this.picTransparencyInput.disabled = false;
+      }
     }
+    this.updateSizeProtectControls();
+  }
+
+  private updateSizeProtectControls(): void {
+    if (!this.sizeFixedCheck) return;
+    const locked = this.sizeFixedCheck.checked;
+    const transformLocked = locked || this.objectType === 'ole';
+    this.sizeLockControls.forEach((control) => {
+      control.disabled = locked;
+    });
+    // OLE 개체는 한컴과 같이 변형 항목을 편집 대상으로 노출하지 않는다.
+    if (this.rotationInput) this.rotationInput.disabled = transformLocked;
+    if (this.horzFlipCheck) this.horzFlipCheck.disabled = transformLocked;
+    if (this.vertFlipCheck) this.vertFlipCheck.disabled = transformLocked;
+    if (this.skewHInput) this.skewHInput.disabled = true;
+    if (this.skewVInput) this.skewVInput.disabled = true;
   }
 
   private updatePositionVisibility(): void {
@@ -2366,15 +2620,36 @@ export class PicturePropsDialog {
     this.posDetailEls.forEach(el => {
       el.style.display = hidden ? 'none' : '';
     });
+    this.updateOverlapOption();
+  }
+
+  private updateOverlapOption(): void {
+    if (!this.overlapAllowCheck || !this.pageAreaLimitCheck) return;
+    const restricted = this.pageAreaLimitCheck.checked;
+    this.overlapAllowCheck.disabled = restricted || this.treatAsCharCheck.checked;
+    if (restricted) {
+      this.overlapAllowCheck.checked = false;
+    }
   }
 
   private selectWrap(idx: number): void {
     this.wrapBtns.forEach((b, i) => b.classList.toggle('active', i === idx));
+    if (!this.horzRelSelect) return;
+    if (this.wrapValues[idx] === 'TopAndBottom') {
+      this.horzRelSelect.value = 'TakePlace';
+    } else if (this.horzRelSelect.value === 'TakePlace') {
+      this.horzRelSelect.value = this.props?.horzRelTo ?? 'Column';
+    }
   }
 
   private getSelectedWrap(): string {
     const idx = this.wrapBtns.findIndex(b => b.classList.contains('active'));
-    return idx >= 0 ? this.wrapValues[idx] : 'Square';
+    if (idx >= 0) return this.wrapValues[idx];
+    // 활성 버튼 없음 = 현재 배치가 UI 버튼에 매핑되지 않는 값('Through' 등,
+    // populateFromProps 의 indexOf = -1). 여기서 'Square' 로 대체하면 사용자가
+    // 아무것도 바꾸지 않고 확인만 눌러도 diff 가 생겨 배치가 조용히 변경·
+    // 저장되므로, 개체의 원래 배치 값을 그대로 보존한다.
+    return this.props?.textWrap ?? 'Square';
   }
 
   /** 캡션 direction + vertAlign → 3×3 그리드 인덱스 */
@@ -2449,40 +2724,15 @@ export class PicturePropsDialog {
     mainRow.appendChild(rightCol);
     dlg.appendChild(mainRow);
     overlay.appendChild(dlg);
+    enableDialogDrag(dlg, titleBar);
 
-    // Escape / 오버레이 클릭
+    // Escape
     overlay.addEventListener('keydown', (e) => {
       if (e.key === 'Escape') { e.stopPropagation(); overlay.remove(); }
-    });
-    overlay.addEventListener('mousedown', (e) => {
-      if (e.target === overlay) overlay.remove();
     });
 
     document.body.appendChild(overlay);
     setTimeout(() => textarea.focus(), 50);
-  }
-
-  // ════════════════════════════════════════════════════════
-  //  드래그
-  // ════════════════════════════════════════════════════════
-
-  private enableDrag(titleEl: HTMLElement): void {
-    let offsetX = 0, offsetY = 0, isDragging = false;
-    titleEl.addEventListener('mousedown', (e) => {
-      if ((e.target as HTMLElement).closest('.dialog-close')) return;
-      isDragging = true;
-      const rect = this.dialog.getBoundingClientRect();
-      offsetX = e.clientX - rect.left;
-      offsetY = e.clientY - rect.top;
-      e.preventDefault();
-    });
-    document.addEventListener('mousemove', (e) => {
-      if (!isDragging) return;
-      this.dialog.style.left = `${e.clientX - offsetX}px`;
-      this.dialog.style.top = `${e.clientY - offsetY}px`;
-      this.dialog.style.margin = '0';
-    });
-    document.addEventListener('mouseup', () => { isDragging = false; });
   }
 
   // ════════════════════════════════════════════════════════

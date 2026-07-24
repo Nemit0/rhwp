@@ -1,22 +1,22 @@
-# Competitor Canvas Rendering Analysis and DPR Scaling Strategy
+# Commercial Products' Canvas Rendering Analysis and DPR Scaling Strategy
 
 Written: 2026-02-21
 
 ## 1. Background
 
-After attempting Task 124 (glyph path rendering), we concluded that converting glyph outlines to Canvas Path2D in WASM cannot match the rendering quality of Hancom's web editor (WebGian). This document analyzes how competitors actually implement Canvas rendering to inform our product strategy.
+After attempting Task 124 (glyph path rendering), we concluded that converting glyph outlines to Canvas Path2D in WASM cannot match the rendering quality of Hancom's web editor (WebGian). This document analyzes how some commercial products actually implement Canvas rendering to inform our product strategy.
 
-## 2. Competitor Rendering Approaches Compared
+## 2. Commercial Product Rendering Approaches Compared
 
 ### 2.1 Three Approaches
 
 | Approach | Product | Text Rendering | DPR Handling | WASM Size |
 |----------|------|-------------|----------|-----------|
-| WASM Bitmap | Polaris Office | WASM internal FreeType | Pass DPR scaling to WASM | 19MB |
+| WASM Bitmap | A commercial web office | WASM internal FreeType | Pass DPR scaling to WASM | 19MB |
 | Server JSON + fillText | Hancom WebGian | Canvas fillText | ctx.scale(DPR) | Server-dependent |
 | fillText + DPR | Google Docs | Canvas fillText | ctx.scale(DPR) | - |
 
-### 2.2 Polaris Office (WASM Bitmap Approach)
+### 2.2 WASM Bitmap Approach (a commercial web office)
 
 **Architecture**: C++ Emscripten WASM (19MB) -> RGBA bitmap -> putImageData
 

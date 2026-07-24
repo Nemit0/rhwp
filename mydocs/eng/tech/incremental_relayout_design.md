@@ -145,7 +145,7 @@ rhwp already possesses a substantial level of incremental layout mechanisms.
 
 ### 3.1 Strategy Comparison
 
-| | Strategy A: Respect Original LINE_SEG (Current) | Strategy B: Independent Typesetting (Polaris-style) | **Strategy C: Match Hancom Exactly (v1.0.0 Goal)** |
+| | Strategy A: Respect Original LINE_SEG (Current) | Strategy B: Independent Typesetting (commercial-product style) | **Strategy C: Match Hancom Exactly (v1.0.0 Goal)** |
 |---|---|---|---|
 | Viewer accuracy | High (depends on original) | Discrepancies expected | **Identical to Hancom** |
 | Editing smoothness | Discontinuous (jump on first edit) | Smooth | **Smooth** |

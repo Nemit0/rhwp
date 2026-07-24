@@ -1,5 +1,6 @@
 import type { WasmBridge } from '@/core/wasm-bridge';
-import type { DocumentPosition, CharProperties } from '@/core/types';
+import type { DocumentPosition, CharProperties, ParaProperties, CellPathLike } from '@/core/types';
+import { MAX_PAGE_LOCAL_TEXT_EDIT_CHARS } from './input-edit-invalidation';
 
 /** 편집 명령 공통 인터페이스 */
 export interface EditCommand {
@@ -13,9 +14,97 @@ export interface EditCommand {
   mergeWith(other: EditCommand): EditCommand | null;
   /** 리소스 해제 (스냅샷 명령의 메모리 반환 등). 스택에서 제거될 때 호출. */
   discard?(wasm: WasmBridge): void;
+  /** page-local refresh 판정을 위한 가벼운 텍스트 편집 payload. */
+  getPageLocalTextEditOptions?(): { insertedText?: string; deleteCount?: number };
+  /** 방금 실행한 mutation effect를 한 번만 반환한다. */
+  consumeTextMutationEffects?(): TextMutationEffects;
+}
+
+/** cell text mutation의 deferred/flow 경계와 immediate pagination 완료를 함께 전달한다. */
+export interface TextMutationEffects {
+  readonly deferredPagination: boolean;
+  readonly cellFlowChanged: boolean;
+  readonly paginationCompleted: boolean;
+}
+
+export const NO_TEXT_MUTATION_EFFECTS: TextMutationEffects = Object.freeze({
+  deferredPagination: false,
+  cellFlowChanged: false,
+  paginationCompleted: false,
+});
+
+export const IMMEDIATE_TEXT_MUTATION_EFFECTS: TextMutationEffects = Object.freeze({
+  deferredPagination: false,
+  cellFlowChanged: false,
+  paginationCompleted: true,
+});
+
+/** raw IME/iOS 묶음에서 effect를 OR 누적하고 한 번만 소비한다. */
+export class TextMutationEffectAccumulator {
+  private effects: TextMutationEffects = NO_TEXT_MUTATION_EFFECTS;
+
+  add(effects: TextMutationEffects): void {
+    this.effects = {
+      deferredPagination: this.effects.deferredPagination || effects.deferredPagination,
+      cellFlowChanged: this.effects.cellFlowChanged || effects.cellFlowChanged,
+      paginationCompleted: this.effects.paginationCompleted || effects.paginationCompleted,
+    };
+  }
+
+  consume(): TextMutationEffects {
+    const effects = this.effects;
+    this.effects = NO_TEXT_MUTATION_EFFECTS;
+    return effects;
+  }
+
+  clear(): void {
+    this.effects = NO_TEXT_MUTATION_EFFECTS;
+  }
 }
 
 // ─── 편집 작업 서술자 (라우팅 통합) ────────────────────
+
+export type EditDomain =
+  | 'text'
+  | 'charFormat'
+  | 'paraFormat'
+  | 'table'
+  | 'object'
+  | 'page'
+  | 'field'
+  | 'view'
+  | 'unknown';
+
+export type RefreshPolicy = 'auto' | 'full' | 'pageLocal' | 'selectionOnly' | 'none';
+
+export type DirtyScope =
+  | 'document'
+  | 'section'
+  | 'page'
+  | 'paragraph'
+  | 'table'
+  | 'object'
+  | 'none';
+
+export type SelectionPolicy =
+  | 'auto'
+  | 'keep'
+  | 'moveToResult'
+  | 'restoreObjectSelection'
+  | 'none';
+
+export interface OperationMetadata {
+  /** 메뉴/툴바/단축키 action id. */
+  actionId?: string;
+  /** 편집 도메인. 직접 wasm mutation을 audit 할 때 분류 기준으로 사용한다. */
+  domain?: EditDomain;
+  /** mutation 후 렌더링 갱신 정책. 생략하면 kind 별 기존 기본값을 따른다. */
+  refresh?: RefreshPolicy;
+  /** 장기적으로 renderer invalidation 최적화에 사용할 dirty 범위. */
+  dirtyScope?: DirtyScope;
+  /** selection/caret 복원 정책. 현재는 문서화용 metadata로만 사용한다. */
+  selection?: SelectionPolicy;
+}
 
 /**
  * 편집 작업 서술자 — 호출부가 "무엇을 하려는가"만 기술하고,
@@ -23,12 +112,13 @@ export interface EditCommand {
  *
  * - command: 정밀 커맨드 (텍스트 삽입/삭제, 문단 분할/병합, 서식)
  * - snapshot: 스냅샷 기반 커맨드 (붙여넣기, 객체 삭제 등)
- * - record:  WASM 직접 호출 후 히스토리에만 기록 (IME, 객체 이동)
+ * - record:  WASM 직접 호출 후 히스토리에만 기록 (IME, 객체 이동).
+ *            아키텍처 문서에서는 recordApplied 계약으로 정의한다.
  */
 export type OperationDescriptor =
-  | { kind: 'command'; command: EditCommand }
-  | { kind: 'snapshot'; operationType: string; operation: (wasm: WasmBridge) => DocumentPosition }
-  | { kind: 'record'; command: EditCommand };
+  | { kind: 'command'; command: EditCommand; meta?: OperationMetadata }
+  | { kind: 'snapshot'; operationType: string; operation: (wasm: WasmBridge) => DocumentPosition; meta?: OperationMetadata }
+  | { kind: 'record'; command: EditCommand; meta?: OperationMetadata };
 
 // ─── 본문/셀 분기 헬퍼 ────────────────────────────────
 
@@ -41,12 +131,63 @@ function isNestedCell(pos: DocumentPosition): boolean {
   return (pos.cellPath?.length ?? 0) > 1;
 }
 
+export function canUseDeferredCellTextInsert(pos: DocumentPosition, text: string): boolean {
+  if (!isCell(pos) || isNestedCell(pos)) return false;
+  if (text.length === 0 || text.length > MAX_PAGE_LOCAL_TEXT_EDIT_CHARS) return false;
+  if (/[\r\n\t]/.test(text)) return false;
+  return true;
+}
+
 /** cellPath를 WASM용 JSON 문자열로 변환 */
 function cellPathJson(pos: DocumentPosition): string {
   return JSON.stringify(pos.cellPath ?? []);
 }
 
-function doInsertText(wasm: WasmBridge, pos: DocumentPosition, text: string): void {
+/** 셀 문단 구조 편집 뒤 flat/path 커서 위치를 같은 문단으로 맞춘다. */
+function cellParagraphPosition(
+  pos: DocumentPosition,
+  cellParaIndex: number,
+  charOffset: number,
+): DocumentPosition {
+  const cellPath = pos.cellPath?.map((entry, index, path) =>
+    index + 1 === path.length ? { ...entry, cellParaIndex } : entry,
+  );
+  return {
+    ...pos,
+    paragraphIndex: cellParaIndex,
+    cellParaIndex,
+    cellPath,
+    charOffset,
+    cursorRect: undefined,
+  };
+}
+
+export function insertTextWithMutationEffects(
+  wasm: WasmBridge,
+  pos: DocumentPosition,
+  text: string,
+): TextMutationEffects {
+  if (isNestedCell(pos)) {
+    wasm.insertTextInCellByPath(pos.sectionIndex, pos.parentParaIndex!, cellPathJson(pos), pos.charOffset, text);
+  } else if (isCell(pos)) {
+    if (canUseDeferredCellTextInsert(pos, text)) {
+      const result = wasm.insertTextInCellDeferredPagination(pos.sectionIndex, pos.parentParaIndex!, pos.controlIndex!, pos.cellIndex!, pos.cellParaIndex!, pos.charOffset, text);
+      return {
+        deferredPagination: result.paginationDeferred,
+        cellFlowChanged: result.cellFlowChanged,
+        paginationCompleted: !result.paginationDeferred,
+      };
+    } else {
+      wasm.insertTextInCell(pos.sectionIndex, pos.parentParaIndex!, pos.controlIndex!, pos.cellIndex!, pos.cellParaIndex!, pos.charOffset, text);
+    }
+  } else {
+    wasm.insertText(pos.sectionIndex, pos.paragraphIndex, pos.charOffset, text);
+  }
+  return IMMEDIATE_TEXT_MUTATION_EFFECTS;
+}
+
+/** undo/구조 명령의 full-refresh 복원은 flat cell에서도 immediate pagination을 사용한다. */
+function doInsertTextImmediate(wasm: WasmBridge, pos: DocumentPosition, text: string): void {
   if (isNestedCell(pos)) {
     wasm.insertTextInCellByPath(pos.sectionIndex, pos.parentParaIndex!, cellPathJson(pos), pos.charOffset, text);
   } else if (isCell(pos)) {
@@ -81,6 +222,7 @@ function doGetTextRange(wasm: WasmBridge, pos: DocumentPosition, count: number):
 export class InsertTextCommand implements EditCommand {
   readonly type = 'insertText';
   readonly timestamp: number;
+  private lastMutationEffects: TextMutationEffects = NO_TEXT_MUTATION_EFFECTS;
 
   constructor(
     private position: DocumentPosition,
@@ -91,11 +233,23 @@ export class InsertTextCommand implements EditCommand {
   }
 
   execute(wasm: WasmBridge): DocumentPosition {
-    doInsertText(wasm, this.position, this.text);
+    this.lastMutationEffects = NO_TEXT_MUTATION_EFFECTS;
+    this.lastMutationEffects = insertTextWithMutationEffects(wasm, this.position, this.text);
     return { ...this.position, charOffset: this.position.charOffset + this.text.length };
   }
 
+  consumeTextMutationEffects(): TextMutationEffects {
+    const effects = this.lastMutationEffects;
+    this.lastMutationEffects = NO_TEXT_MUTATION_EFFECTS;
+    return effects;
+  }
+
+  getPageLocalTextEditOptions(): { insertedText: string } {
+    return { insertedText: this.text };
+  }
+
   undo(wasm: WasmBridge): DocumentPosition {
+    this.lastMutationEffects = NO_TEXT_MUTATION_EFFECTS;
     doDeleteText(wasm, this.position, this.text.length);
     return { ...this.position };
   }
@@ -132,6 +286,7 @@ export class DeleteTextCommand implements EditCommand {
 
   /** undo용 삭제된 텍스트 (execute 시 보존) */
   private deletedText: string;
+  private lastMutationEffects: TextMutationEffects = NO_TEXT_MUTATION_EFFECTS;
 
   constructor(
     private position: DocumentPosition,
@@ -145,16 +300,29 @@ export class DeleteTextCommand implements EditCommand {
   }
 
   execute(wasm: WasmBridge): DocumentPosition {
+    this.lastMutationEffects = NO_TEXT_MUTATION_EFFECTS;
     // 삭제 전 텍스트 보존
     if (!this.deletedText) {
       this.deletedText = doGetTextRange(wasm, this.position, this.count);
     }
     doDeleteText(wasm, this.position, this.count);
+    this.lastMutationEffects = IMMEDIATE_TEXT_MUTATION_EFFECTS;
     return { ...this.position };
   }
 
+  consumeTextMutationEffects(): TextMutationEffects {
+    const effects = this.lastMutationEffects;
+    this.lastMutationEffects = NO_TEXT_MUTATION_EFFECTS;
+    return effects;
+  }
+
+  getPageLocalTextEditOptions(): { deleteCount: number } {
+    return { deleteCount: this.count };
+  }
+
   undo(wasm: WasmBridge): DocumentPosition {
-    doInsertText(wasm, this.position, this.deletedText);
+    this.lastMutationEffects = NO_TEXT_MUTATION_EFFECTS;
+    doInsertTextImmediate(wasm, this.position, this.deletedText);
     const restoredLen = this.deletedText.length;
     return { ...this.position, charOffset: this.position.charOffset + restoredLen };
   }
@@ -204,7 +372,7 @@ export class InsertLineBreakCommand implements EditCommand {
   constructor(private position: DocumentPosition) {}
 
   execute(wasm: WasmBridge): DocumentPosition {
-    doInsertText(wasm, this.position, '\n');
+    doInsertTextImmediate(wasm, this.position, '\n');
     const newPos = { ...this.position, charOffset: this.position.charOffset + 1 };
     return newPos;
   }
@@ -226,7 +394,7 @@ export class InsertTabCommand implements EditCommand {
   constructor(private position: DocumentPosition) {}
 
   execute(wasm: WasmBridge): DocumentPosition {
-    doInsertText(wasm, this.position, '\t');
+    doInsertTextImmediate(wasm, this.position, '\t');
     const newPos = { ...this.position, charOffset: this.position.charOffset + 1 };
     return newPos;
   }
@@ -358,12 +526,12 @@ export class DeleteSelectionCommand implements EditCommand {
     if (!this.multiPara) {
       // 같은 문단 내 삭제 → 텍스트 재삽입
       const text = this.savedTexts[0] || '';
-      if (text) doInsertText(wasm, start, text);
+      if (text) doInsertTextImmediate(wasm, start, text);
     } else {
       // 다중 문단: 마지막 텍스트부터 역순으로 복원
       // 1) 첫 문단 뒷부분 텍스트 삽입
       const firstText = this.savedTexts[0] || '';
-      if (firstText) doInsertText(wasm, start, firstText);
+      if (firstText) doInsertTextImmediate(wasm, start, firstText);
 
       // 2) 중간 문단 + 마지막 문단: splitParagraph로 분리 후 텍스트 삽입
       if (isCell(start)) {
@@ -374,7 +542,7 @@ export class DeleteSelectionCommand implements EditCommand {
           if (text || i < this.savedTexts.length - 1) {
             // splitParagraph는 셀 내에서 미지원 → 텍스트만 이어붙이기
             const restorePos = { ...start, charOffset: start.charOffset + firstText.length };
-            if (text) doInsertText(wasm, restorePos, '\n' + text);
+            if (text) doInsertTextImmediate(wasm, restorePos, '\n' + text);
           }
         }
       } else {
@@ -407,7 +575,9 @@ interface ParaFormatEntry {
   startOffset: number;
   endOffset: number;
   /** undo용: 적용 전 charShapeId */
-  prevCharShapeId?: number;
+  beforeCharShapeId?: number;
+  /** redo용: 적용 후 charShapeId */
+  afterCharShapeId?: number;
 }
 
 export class ApplyCharFormatCommand implements EditCommand {
@@ -423,6 +593,11 @@ export class ApplyCharFormatCommand implements EditCommand {
   ) {}
 
   execute(wasm: WasmBridge): DocumentPosition {
+    if (this.entries.length > 0 && this.entries.every((entry) => entry.afterCharShapeId !== undefined)) {
+      this.restoreCharShapeIds(wasm, 'after');
+      return { ...this.start };
+    }
+
     const { start, end } = this;
     const propsJson = JSON.stringify(this.props);
 
@@ -440,11 +615,12 @@ export class ApplyCharFormatCommand implements EditCommand {
         const to = p === endPara ? end.charOffset : wasm.getCellParagraphLength(sec, ppi, ci, cei, p);
         if (to <= from) continue;
 
-        // undo용 이전 서식 저장
         const prevProps = wasm.getCellCharPropertiesAt(sec, ppi, ci, cei, p, from);
-        this.entries.push({ paraIndex: p, startOffset: from, endOffset: to, prevCharShapeId: prevProps.charShapeId });
+        this.entries.push({ paraIndex: p, startOffset: from, endOffset: to, beforeCharShapeId: prevProps.charShapeId });
 
         wasm.applyCharFormatInCell(sec, ppi, ci, cei, p, from, to, propsJson);
+        const afterProps = wasm.getCellCharPropertiesAt(sec, ppi, ci, cei, p, from);
+        this.entries[this.entries.length - 1].afterCharShapeId = afterProps.charShapeId;
       }
     } else {
       const sec = start.sectionIndex;
@@ -458,9 +634,11 @@ export class ApplyCharFormatCommand implements EditCommand {
         if (to <= from) continue;
 
         const prevProps = wasm.getCharPropertiesAt(sec, p, from);
-        this.entries.push({ paraIndex: p, startOffset: from, endOffset: to, prevCharShapeId: prevProps.charShapeId });
+        this.entries.push({ paraIndex: p, startOffset: from, endOffset: to, beforeCharShapeId: prevProps.charShapeId });
 
         wasm.applyCharFormat(sec, p, from, to, propsJson);
+        const afterProps = wasm.getCharPropertiesAt(sec, p, from);
+        this.entries[this.entries.length - 1].afterCharShapeId = afterProps.charShapeId;
       }
     }
 
@@ -468,24 +646,131 @@ export class ApplyCharFormatCommand implements EditCommand {
   }
 
   undo(wasm: WasmBridge): DocumentPosition {
-    const { start } = this;
+    this.restoreCharShapeIds(wasm, 'before');
+    return { ...this.start };
+  }
 
-    // 이전 charShapeId로 복원
+  private restoreCharShapeIds(wasm: WasmBridge, side: 'before' | 'after'): void {
+    const { start } = this;
     for (const entry of this.entries) {
-      if (entry.prevCharShapeId === undefined) continue;
-      const restoreJson = JSON.stringify({ charShapeId: entry.prevCharShapeId });
+      const charShapeId = side === 'before' ? entry.beforeCharShapeId : entry.afterCharShapeId;
+      if (charShapeId === undefined) continue;
 
       if (isCell(start)) {
-        wasm.applyCharFormatInCell(
+        wasm.setCharShapeIdInCell(
           start.sectionIndex, start.parentParaIndex!, start.controlIndex!, start.cellIndex!,
-          entry.paraIndex, entry.startOffset, entry.endOffset, restoreJson,
+          entry.paraIndex, entry.startOffset, entry.endOffset, charShapeId,
         );
       } else {
-        wasm.applyCharFormat(start.sectionIndex, entry.paraIndex, entry.startOffset, entry.endOffset, restoreJson);
+        wasm.setCharShapeId(start.sectionIndex, entry.paraIndex, entry.startOffset, entry.endOffset, charShapeId);
       }
     }
+  }
 
-    return { ...this.start };
+  mergeWith(): null { return null; }
+}
+
+// ─── 문단 서식 적용 명령 ─────────────────────────────
+
+export type ParaFormatTarget =
+  | { kind: 'body'; sec: number; para: number }
+  | { kind: 'cell'; sec: number; parentPara: number; controlIdx: number; cellIdx: number; cellParaIdx: number };
+
+interface ParaShapeHistoryEntry {
+  target: ParaFormatTarget;
+  beforeParaShapeId: number;
+  afterParaShapeId?: number;
+}
+
+function getParaShapeId(wasm: WasmBridge, target: ParaFormatTarget): number {
+  const props = target.kind === 'body'
+    ? wasm.getParaPropertiesAt(target.sec, target.para)
+    : wasm.getCellParaPropertiesAt(
+        target.sec,
+        target.parentPara,
+        target.controlIdx,
+        target.cellIdx,
+        target.cellParaIdx,
+      );
+  const paraShapeId = props.paraShapeId;
+  if (paraShapeId === undefined) {
+    throw new Error('문단 모양 ID를 조회할 수 없습니다');
+  }
+  return paraShapeId;
+}
+
+function applyParaFormatToTarget(wasm: WasmBridge, target: ParaFormatTarget, propsJson: string): void {
+  if (target.kind === 'body') {
+    wasm.applyParaFormat(target.sec, target.para, propsJson);
+    return;
+  }
+  wasm.applyParaFormatInCell(
+    target.sec,
+    target.parentPara,
+    target.controlIdx,
+    target.cellIdx,
+    target.cellParaIdx,
+    propsJson,
+  );
+}
+
+function restoreParaShapeId(wasm: WasmBridge, target: ParaFormatTarget, paraShapeId: number): void {
+  if (target.kind === 'body') {
+    wasm.setParaShapeId(target.sec, target.para, paraShapeId);
+    return;
+  }
+  wasm.setCellParaShapeId(
+    target.sec,
+    target.parentPara,
+    target.controlIdx,
+    target.cellIdx,
+    target.cellParaIdx,
+    paraShapeId,
+  );
+}
+
+export class ApplyParaFormatCommand implements EditCommand {
+  readonly type = 'applyParaFormat';
+  readonly timestamp = Date.now();
+
+  private entries: ParaShapeHistoryEntry[] = [];
+
+  constructor(
+    private targets: ParaFormatTarget[],
+    private props: Partial<ParaProperties>,
+    private cursorBefore: DocumentPosition,
+  ) {}
+
+  execute(wasm: WasmBridge): DocumentPosition {
+    if (this.entries.length > 0 && this.entries.every(entry => entry.afterParaShapeId !== undefined)) {
+      for (const entry of this.entries) {
+        restoreParaShapeId(wasm, entry.target, entry.afterParaShapeId!);
+      }
+      return { ...this.cursorBefore };
+    }
+
+    const propsJson = JSON.stringify(this.props);
+    const entries: ParaShapeHistoryEntry[] = this.targets.map(target => ({
+      target,
+      beforeParaShapeId: getParaShapeId(wasm, target),
+    }));
+
+    for (const entry of entries) {
+      applyParaFormatToTarget(wasm, entry.target, propsJson);
+    }
+    for (const entry of entries) {
+      entry.afterParaShapeId = getParaShapeId(wasm, entry.target);
+    }
+
+    this.entries = entries;
+    return { ...this.cursorBefore };
+  }
+
+  undo(wasm: WasmBridge): DocumentPosition {
+    for (const entry of this.entries) {
+      restoreParaShapeId(wasm, entry.target, entry.beforeParaShapeId);
+    }
+    return { ...this.cursorBefore };
   }
 
   mergeWith(): null { return null; }
@@ -532,11 +817,7 @@ export class SplitParagraphInCellCommand implements EditCommand {
     } else {
       wasm.splitParagraphInCell(sec, ppi, pos.controlIndex!, pos.cellIndex!, cpi, pos.charOffset);
     }
-    return {
-      ...pos,
-      cellParaIndex: cpi + 1,
-      charOffset: 0,
-    };
+    return cellParagraphPosition(pos, cpi + 1, 0);
   }
 
   undo(wasm: WasmBridge): DocumentPosition {
@@ -580,11 +861,7 @@ export class MergeParagraphInCellCommand implements EditCommand {
     } else {
       wasm.mergeParagraphInCell(sec, ppi, pos.controlIndex!, pos.cellIndex!, cpi);
     }
-    return {
-      ...pos,
-      cellParaIndex: cpi - 1,
-      charOffset: this.mergePointOffset,
-    };
+    return cellParagraphPosition(pos, cpi - 1, this.mergePointOffset);
   }
 
   undo(wasm: WasmBridge): DocumentPosition {
@@ -699,6 +976,39 @@ export class MoveTableCommand implements EditCommand {
 
 // ─── 그림 이동 명령 ─────────────────────────────────────
 
+/** 두 cellPath 가 동일한지 비교 (undefined/빈배열은 본문(body-level)로 동일 취급) */
+function sameCellPath(a?: CellPathLike, b?: CellPathLike): boolean {
+  return JSON.stringify(a ?? []) === JSON.stringify(b ?? []);
+}
+
+/** 개체 이동 명령용 속성 조회 — cellPath 존재 시 by-path API 로 분기 */
+function moveGetProps(
+  wasm: WasmBridge, kind: 'image' | 'shape',
+  sec: number, ppi: number, ci: number, cellPath?: CellPathLike,
+): { horzOffset: number; vertOffset: number } {
+  const nested = !!cellPath && cellPath.length > 0;
+  if (kind === 'shape') {
+    return nested ? wasm.getCellShapePropertiesByPath(sec, ppi, cellPath!, ci) : wasm.getShapeProperties(sec, ppi, ci);
+  }
+  return nested ? wasm.getCellPicturePropertiesByPath(sec, ppi, cellPath!, ci) : wasm.getPictureProperties(sec, ppi, ci);
+}
+
+/** 개체 이동 명령용 속성 변경 — cellPath 존재 시 by-path API 로 분기 */
+function moveSetProps(
+  wasm: WasmBridge, kind: 'image' | 'shape',
+  sec: number, ppi: number, ci: number, cellPath: CellPathLike | undefined,
+  props: Record<string, unknown>,
+): void {
+  const nested = !!cellPath && cellPath.length > 0;
+  if (kind === 'shape') {
+    if (nested) { wasm.setCellShapePropertiesByPath(sec, ppi, cellPath!, ci, props); return; }
+    wasm.setShapeProperties(sec, ppi, ci, props);
+    return;
+  }
+  if (nested) { wasm.setCellPicturePropertiesByPath(sec, ppi, cellPath!, ci, props); return; }
+  wasm.setPictureProperties(sec, ppi, ci, props);
+}
+
 export class MovePictureCommand implements EditCommand {
   readonly type = 'movePicture';
   readonly timestamp: number;
@@ -711,22 +1021,23 @@ export class MovePictureCommand implements EditCommand {
     private deltaV: number,
     private origHorzOffset: number,
     private origVertOffset: number,
+    private cellPath?: CellPathLike,
     timestamp?: number,
   ) {
     this.timestamp = timestamp ?? Date.now();
   }
 
   execute(wasm: WasmBridge): DocumentPosition {
-    const props = wasm.getPictureProperties(this.sec, this.ppi, this.ci);
-    wasm.setPictureProperties(this.sec, this.ppi, this.ci, {
-      horzOffset: ((props.horzOffset + this.deltaH) >>> 0),
-      vertOffset: ((props.vertOffset + this.deltaV) >>> 0),
+    const props = moveGetProps(wasm, 'image', this.sec, this.ppi, this.ci, this.cellPath);
+    moveSetProps(wasm, 'image', this.sec, this.ppi, this.ci, this.cellPath, {
+      horzOffset: props.horzOffset + this.deltaH,
+      vertOffset: props.vertOffset + this.deltaV,
     });
     return { sectionIndex: this.sec, paragraphIndex: this.ppi, charOffset: 0 };
   }
 
   undo(wasm: WasmBridge): DocumentPosition {
-    wasm.setPictureProperties(this.sec, this.ppi, this.ci, {
+    moveSetProps(wasm, 'image', this.sec, this.ppi, this.ci, this.cellPath, {
       horzOffset: this.origHorzOffset,
       vertOffset: this.origVertOffset,
     });
@@ -736,6 +1047,7 @@ export class MovePictureCommand implements EditCommand {
   mergeWith(other: EditCommand): EditCommand | null {
     if (!(other instanceof MovePictureCommand)) return null;
     if (other.sec !== this.sec || other.ppi !== this.ppi || other.ci !== this.ci) return null;
+    if (!sameCellPath(other.cellPath, this.cellPath)) return null;
     if (other.timestamp - this.timestamp > 500) return null;
 
     return new MovePictureCommand(
@@ -744,6 +1056,7 @@ export class MovePictureCommand implements EditCommand {
       this.deltaV + other.deltaV,
       this.origHorzOffset,
       this.origVertOffset,
+      this.cellPath,
       this.timestamp,
     );
   }
@@ -761,22 +1074,23 @@ export class MoveShapeCommand implements EditCommand {
     private deltaV: number,
     private origHorzOffset: number,
     private origVertOffset: number,
+    private cellPath?: CellPathLike,
     timestamp?: number,
   ) {
     this.timestamp = timestamp ?? Date.now();
   }
 
   execute(wasm: WasmBridge): DocumentPosition {
-    const props = wasm.getShapeProperties(this.sec, this.ppi, this.ci);
-    wasm.setShapeProperties(this.sec, this.ppi, this.ci, {
-      horzOffset: ((props.horzOffset + this.deltaH) >>> 0),
-      vertOffset: ((props.vertOffset + this.deltaV) >>> 0),
+    const props = moveGetProps(wasm, 'shape', this.sec, this.ppi, this.ci, this.cellPath);
+    moveSetProps(wasm, 'shape', this.sec, this.ppi, this.ci, this.cellPath, {
+      horzOffset: props.horzOffset + this.deltaH,
+      vertOffset: props.vertOffset + this.deltaV,
     });
     return { sectionIndex: this.sec, paragraphIndex: this.ppi, charOffset: 0 };
   }
 
   undo(wasm: WasmBridge): DocumentPosition {
-    wasm.setShapeProperties(this.sec, this.ppi, this.ci, {
+    moveSetProps(wasm, 'shape', this.sec, this.ppi, this.ci, this.cellPath, {
       horzOffset: this.origHorzOffset,
       vertOffset: this.origVertOffset,
     });
@@ -786,6 +1100,7 @@ export class MoveShapeCommand implements EditCommand {
   mergeWith(other: EditCommand): EditCommand | null {
     if (!(other instanceof MoveShapeCommand)) return null;
     if (other.sec !== this.sec || other.ppi !== this.ppi || other.ci !== this.ci) return null;
+    if (!sameCellPath(other.cellPath, this.cellPath)) return null;
     if (other.timestamp - this.timestamp > 500) return null;
 
     return new MoveShapeCommand(
@@ -794,9 +1109,73 @@ export class MoveShapeCommand implements EditCommand {
       this.deltaV + other.deltaV,
       this.origHorzOffset,
       this.origVertOffset,
+      this.cellPath,
       this.timestamp,
     );
   }
+}
+
+
+// ─── 개체 크기/위치 속성 변경 명령 ─────────────────────
+
+export type ObjectResizeTarget = {
+  sec: number;
+  ppi: number;
+  ci: number;
+  type: string;
+  cellPath?: CellPathLike;
+  before: Record<string, unknown>;
+  after: Record<string, unknown>;
+};
+
+/**
+ * 그림/도형 리사이즈처럼 드래그 중 WASM에 이미 반영된 속성 변경을
+ * Undo/Redo 스택에 기록하기 위한 명령.
+ */
+export class ResizeObjectCommand implements EditCommand {
+  readonly type = 'resizeObject';
+  readonly timestamp: number;
+
+  constructor(
+    private targets: ObjectResizeTarget[],
+    timestamp?: number,
+  ) {
+    this.timestamp = timestamp ?? Date.now();
+  }
+
+  private setProps(wasm: WasmBridge, target: ObjectResizeTarget, props: Record<string, unknown>): void {
+    if (target.type === 'shape' || target.type === 'line' || target.type === 'group' || target.type === 'ole') {
+      if (target.cellPath && target.cellPath.length > 0) {
+        wasm.setCellShapePropertiesByPath(target.sec, target.ppi, target.cellPath, target.ci, props);
+        return;
+      }
+      wasm.setShapeProperties(target.sec, target.ppi, target.ci, props);
+    } else {
+      if (target.type === 'image' && target.cellPath && target.cellPath.length > 0) {
+        wasm.setCellPicturePropertiesByPath(target.sec, target.ppi, target.cellPath, target.ci, props);
+        return;
+      }
+      wasm.setPictureProperties(target.sec, target.ppi, target.ci, props);
+    }
+  }
+
+  execute(wasm: WasmBridge): DocumentPosition {
+    for (const target of this.targets) {
+      this.setProps(wasm, target, target.after);
+    }
+    const first = this.targets[0];
+    return { sectionIndex: first?.sec ?? 0, paragraphIndex: first?.ppi ?? 0, charOffset: 0 };
+  }
+
+  undo(wasm: WasmBridge): DocumentPosition {
+    for (const target of this.targets) {
+      this.setProps(wasm, target, target.before);
+    }
+    const first = this.targets[0];
+    return { sectionIndex: first?.sec ?? 0, paragraphIndex: first?.ppi ?? 0, charOffset: 0 };
+  }
+
+  mergeWith(): null { return null; }
 }
 
 // ─── 스냅샷 기반 명령 (복잡한 작업의 Undo/Redo) ─────

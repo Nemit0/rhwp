@@ -1,6 +1,7 @@
 import type { WasmBridge } from '@/core/wasm-bridge';
 import type { DocumentPosition } from '@/core/types';
-import type { EditCommand } from './command';
+import { NO_TEXT_MUTATION_EFFECTS } from './command';
+import type { EditCommand, TextMutationEffects } from './command';
 
 /** 스택 내 모든 명령의 discard()를 호출하여 리소스 해제 */
 function discardAll(stack: EditCommand[], wasm: WasmBridge): void {
@@ -14,10 +15,25 @@ export class CommandHistory {
   private undoStack: EditCommand[] = [];
   private redoStack: EditCommand[] = [];
   private maxSize = 1000;
+  private lastExecutionEffects: TextMutationEffects = NO_TEXT_MUTATION_EFFECTS;
+
+  private captureExecutionEffects(command: EditCommand): void {
+    this.lastExecutionEffects =
+      command.consumeTextMutationEffects?.() ?? NO_TEXT_MUTATION_EFFECTS;
+  }
+
+  /** 직전 execute/redo의 effect를 한 번만 소비한다. */
+  consumeLastExecutionEffects(): TextMutationEffects {
+    const effects = this.lastExecutionEffects;
+    this.lastExecutionEffects = NO_TEXT_MUTATION_EFFECTS;
+    return effects;
+  }
 
   /** 명령 실행 + 히스토리 기록. 실행 후 커서 위치 반환 */
   execute(command: EditCommand, wasm: WasmBridge): DocumentPosition {
+    this.lastExecutionEffects = NO_TEXT_MUTATION_EFFECTS;
     const cursorAfter = command.execute(wasm);
+    this.captureExecutionEffects(command);
 
     // 직전 명령과 병합 시도
     if (this.undoStack.length > 0) {
@@ -48,6 +64,7 @@ export class CommandHistory {
 
   /** Undo — 성공 시 커서 위치 반환, 스택 비었으면 null */
   undo(wasm: WasmBridge): DocumentPosition | null {
+    this.lastExecutionEffects = NO_TEXT_MUTATION_EFFECTS;
     const command = this.undoStack.pop();
     if (!command) return null;
 
@@ -58,16 +75,19 @@ export class CommandHistory {
 
   /** Redo — 성공 시 커서 위치 반환, 스택 비었으면 null */
   redo(wasm: WasmBridge): DocumentPosition | null {
+    this.lastExecutionEffects = NO_TEXT_MUTATION_EFFECTS;
     const command = this.redoStack.pop();
     if (!command) return null;
 
     const cursorAfter = command.execute(wasm);
+    this.captureExecutionEffects(command);
     this.undoStack.push(command);
     return cursorAfter;
   }
 
   /** execute() 없이 히스토리에만 기록 (IME compositionend용 — 텍스트가 이미 문서에 있는 경우) */
   recordWithoutExecute(command: EditCommand, wasm?: WasmBridge): void {
+    this.lastExecutionEffects = NO_TEXT_MUTATION_EFFECTS;
     // 직전 명령과 병합 시도
     if (this.undoStack.length > 0) {
       const last = this.undoStack[this.undoStack.length - 1];
@@ -105,5 +125,6 @@ export class CommandHistory {
     }
     this.undoStack = [];
     this.redoStack = [];
+    this.lastExecutionEffects = NO_TEXT_MUTATION_EFFECTS;
   }
 }

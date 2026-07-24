@@ -1,6 +1,17 @@
+---
+kind: canonical
+status: active
+canonical: mydocs/tech/font_fallback_strategy.md
+last_verified: 2026-07-16
+---
+
 # CJK 폰트 폴백 전략 보고서
 
 작성일: 2026-04-07
+
+> 2026-07-17 현행화: canonical 웹폰트 source는 `assets/fonts/`이며, Git 추적 WOFF2는 36개
+> (22,651,296 bytes)다. Studio의 runtime `fonts/...` URL과 이 문서의 fallback 정책은 변경하지 않았다.
+> 아래 2026-04-07 로드맵·권장안의 `web/fonts` 표현은 당시 구현 경로를 설명하는 기록으로 보존한다.
 
 ## 목차
 
@@ -29,9 +40,13 @@ rhwp는 두 가지 렌더링 경로에서 폰트를 사용한다:
 
 ### 1.2 현재 번들링 현황
 
-`web/fonts/` 디렉토리에 17개의 woff2 파일이 존재한다:
+canonical source `assets/fonts/`에는 재배포 가능한 WOFF2 36개가 Git으로 추적된다. 전체 filename,
+라이선스와 fallback 관계는 `assets/fonts/FONTS.md`가 authority다. Studio는
+`rhwp-studio/public/fonts -> ../../assets/fonts`를 통해 runtime URL `fonts/...`를 유지한다.
 
-**오픈 라이선스 (Git 포함 가능, 17파일):**
+다음은 **2026-04-07 조사 당시**의 17개 inventory와 문제 정의다.
+
+**당시 오픈 라이선스 (Git 포함 가능, 17파일):**
 - Pretendard 9종 (OFL)
 - Cafe24 2종 (무료 배포)
 - Happiness Sans 4종 (무료 배포)
@@ -42,11 +57,11 @@ rhwp는 두 가지 렌더링 경로에서 폰트를 사용한다:
 - HY 시리즈 (h2hdrm, hygprm, hygtre, hymjre) -- 한컴/한양 저작물
 - MS 폰트 (Arial, Calibri, Courier New, Tahoma, Times New Roman, Verdana, Malgun Gothic, Webdings, Wingdings)
 
-### 1.3 현재 치환 체계
+### 1.3 조사 당시 치환 체계
 
 `font-substitution.ts`에서 webhwp 기반 7개 언어별 치환 테이블을 운용한다. 치환 체인의 최종 종착점은 대부분 **함초롬바탕/함초롬돋움**이며, 이 두 폰트가 사실상의 최종 폴백 역할을 한다.
 
-### 1.4 문제점
+### 1.4 조사 당시 문제점
 
 1. **함초롬바탕/돋움 woff2**를 번들링하여 배포하는 것은 한컴 라이선스 위반 소지
 2. **MS 폰트 woff2** (Arial, Calibri 등)도 재배포 불가
@@ -649,3 +664,210 @@ Monospace 계열:
 - 파생물도 OFL 라이선스 적용
 
 이 조건은 rhwp 프로젝트(오픈소스 HWP 뷰어)의 사용 방식과 완전히 호환된다.
+
+---
+
+## 부록 A. `resolve_metric_alias` 2-계층 폰트 이름 해석 (Task #259)
+
+### A.1 문제
+
+본 문서 §3~§7 의 CSS font-family 체인과 서브셋 번들링은 **브라우저 렌더** 단계의 폴백.
+그러나 rhwp 내부에는 **SVG 좌표 계산** 을 위한 별도 폰트 메트릭 조회 경로가 있다:
+
+```
+HWP 파일: "HY중고딕" (또는 별칭)
+  ↓ [Layer 1] style_resolver.rs: 한국어 별칭 → 한국어 정규명 (예: 한양중고딕 → HY중고딕)
+  ↓ [Layer 2] font_metrics_data.rs::resolve_metric_alias: 한국어 정규명 → 영문 DB 이름 (예: HY중고딕 → HYGothic-Medium)
+  ↓ font_metrics_data.rs::find_metric: FONT_METRICS 에서 영문 이름으로 조회
+  ↓ None 반환 시 기본 폭 (fallback) 사용 → SVG 에서 글자 겹침
+```
+
+Layer 1 은 구현되어 있었으나 Layer 2 가 HY / 본한글 계열에 대해 누락되어 있었다 (Task #259).
+
+### A.2 HY 계열 매핑 (7건)
+
+| 한국어 정규명 | 영문 DB 이름 | em_size | 비고 |
+|---|---|---|---|
+| HY중고딕 | HYGothic-Medium | 1000 | Regular 만 (bold 요청 시 bold_fallback) |
+| HY견고딕 | HYGothic-Extra | 1000 | |
+| HY헤드라인M | HYHeadLine-Medium | 1000 | |
+| HY견명조 | HYMyeongJo-Extra | 1000 | |
+| HY신명조 | HYSinMyeongJo-Medium | 1000 | |
+| HY그래픽 | HYGraphic-Medium | 1000 | |
+| HY궁서 | HYGungSo-Bold | 1000 | |
+
+### A.3 본한글 / 본명조 근사 매핑 정책
+
+HWP 문서에서 다음 폰트명들은 FONT_METRICS DB 에 정식 엔트리가 없음:
+- **본한글 / 본한글vf / 본고딕 계열** (Source Han Sans KR)
+- **본명조 계열** (Source Han Serif KR)
+
+정식 DB 엔트리 추가 (TTF → `extract_metrics` 파이프라인) 는 별도 대형 작업이므로, 현재는 **한글 원천이 동일한 오픈소스 폰트로 근사**:
+
+| 원본 폰트 계열 | 매핑 대상 | 근거 |
+|---|---|---|
+| Source Han Sans 계열 (본한글 · 본고딕 · Noto Sans CJK KR) | **Pretendard** | Pretendard 한글 글리프는 Source Han Sans KR 합성 · OFL 호환 · 이미 번들 |
+| Source Han Serif 계열 (본명조 · Noto Serif CJK KR) | **Noto Serif KR** | 같은 serif 한글 원천 · OFL 호환 · 이미 번들 |
+
+### A.4 근사 한계
+
+1. **Latin 폭 차이**: Pretendard Latin 은 Inter 기반. 본한글 Latin 과 미세 차이.
+2. **Weight 축 근사**: Pretendard 메트릭은 Regular / Bold 2단계. 본한글 ExtraLight/Light/Medium/Heavy, 본한글vf 의 임의 wght 는 Regular/Bold 중 가까운 쪽으로 근사. CJK 는 weight 별 한글 폭 차이가 작아 실무 허용.
+3. **정식 DB 엔트리 추가는 별도 이슈**.
+
+### A.5 유지보수 체크리스트
+
+**새 한글 폰트 추가 시 반드시 확인**:
+
+- [ ] `style_resolver.rs` 에 Layer 1 (별칭 → 정규명) 등록
+- [ ] `font_metrics_data.rs::resolve_metric_alias` 에 Layer 2 (정규명 → 영문 DB 이름) 등록
+- [ ] FONT_METRICS 배열에 영문 DB 이름으로 엔트리 존재하는지 확인. 없으면:
+  - (A) `extract_metrics` 로 TTF 추가 (정식), 또는
+  - (B) 기존 유사 폰트로 근사 매핑 (본한글 → Pretendard 사례)
+- [ ] 단위 테스트 추가 (`mod tests` in `font_metrics_data.rs`)
+
+Layer 2 누락 시 증상: `find_metric` None 반환 → 기본 폭 → SVG 에서 글자 겹침.
+
+
+---
+
+## 10. 옛한글 (Old Hangul) Fallback (Task #528)
+
+### 10.1 본질
+
+한/글 2010 이전 버전에서 입력된 옛한글은 PUA 영역 (U+E0BC ~ U+F8F7) 에 저장된다. 한컴 자체 폰트 (함초롬바탕 LVT 등) 는 PUA 글리프를 직접 보유하나, OFL 폰트는 이 영역을 미지원.
+
+해결: PUA → KS X 1026-1:2007 자모 시퀀스 변환 + 변환 결과를 합자 (CCMP/LJMO/VJMO/TJMO) 렌더링하는 폰트 fallback.
+
+### 10.2 채택 폰트
+
+**Source Han Serif K Old Hangul subset** (Adobe + Google, **SIL OFL 1.1**)
+
+- 출처: https://github.com/adobe-fonts/source-han-serif (Adobe-Fonts/source-han-serif)
+- 원본: 23 MB (`SourceHanSerifK-Regular.otf`)
+- subset: **234 KB woff2** (옛한글 자모 영역만 + 합자 피처 보존)
+- canonical 라이선스: `assets/fonts/SourceHanSerifK-OFL.txt`
+
+### 10.3 Subset 절차
+
+```bash
+# 원본 다운로드
+curl -L -O https://github.com/adobe-fonts/source-han-serif/raw/release/OTF/Korean/SourceHanSerifK-Regular.otf
+
+# Old Hangul 영역 + 합자 피처 보존 subset
+pyftsubset SourceHanSerifK-Regular.otf \
+    --unicodes='U+1100-11FF,U+A960-A97F,U+D7B0-D7FF' \
+    --layout-features='*' \
+    --output-file=SourceHanSerifK-OldHangul-subset.woff2 \
+    --flavor=woff2 --no-hinting
+```
+
+검증:
+- 357/368 옛한글 자모 codepoints 커버 (KTUG 매핑 target jamo 357/357 100%)
+- GSUB features: ccmp + ljmo + vjmo + tjmo (모든 합자 피처 보존)
+
+### 10.4 적용 위치
+
+**WASM 웹 빌드만**:
+- canonical source: `assets/fonts/SourceHanSerifK-OldHangul-subset.woff2`
+- runtime URL: `fonts/SourceHanSerifK-OldHangul-subset.woff2` (`rhwp-studio/public/fonts` 링크로 배포)
+- `rhwp-studio/src/core/font-loader.ts` 의 `FONT_LIST` 에 등록
+- `unicode-range: U+1100-11FF, U+A960-A97F, U+D7B0-D7FF` 으로 옛한글 영역만 매칭 → 일반 한글 미영향
+
+**네이티브 SVG 출력**:
+- `src/renderer/mod.rs::generic_fallback` 의 한글 serif/sans-serif 체인 말단에 `'Source Han Serif K Old Hangul'` 추가
+- 단독 SVG 사용 시 `--font-style` / `--embed-fonts` 옵션 또는 시스템에 폰트 설치 필요
+
+### 10.5 변환 파이프라인
+
+```
+[원본 IR: PUA U+E38A]
+       ↓ Composer / Renderer (Task #528)
+[map_pua_old_hangul] — KTUG 매핑 표 룩업
+       ↓
+[KS X 1026-1:2007 자모 시퀀스: U+1103 U+119E]
+       ↓
+[font-family 체인 — 일반 한글 폰트는 cmap 부재로 fallback]
+       ↓
+[Source Han Serif K Old Hangul (unicode-range 매칭)]
+       ↓
+[CCMP/LJMO/VJMO/TJMO 합자 → 단일 음절 글리프]
+```
+
+### 10.6 매핑 표
+
+KTUG HanyangPuaTableProject (Public Domain) — 5,660 매핑 (BMP PUA U+E0BC ~ U+F8F7).
+
+자세한 내용: `mydocs/tech/pua_oldhangul_mapping_sources.md`.
+
+### 10.7 미커버 영역
+
+| 영역 | 처리 |
+|------|------|
+| Supplementary PUA-A (U+F0854/F0855 책괄호 등) | 본 task 외 — 별도 issue 권장 |
+| 한컴 자체 PUA 기호 | Task #509 패턴 정합 (별도 매핑 필요) |
+
+
+---
+
+## 11. 메트릭(advance) ↔ 렌더 글리프(대체폰트) 시각 정합 (Task #1224)
+
+### 11.1 본질 — 위치·폭은 제어, **획 두께(weight)는 폴백 폰트가 결정**
+
+SVG 텍스트(`svg.rs::draw_text`)는 클러스터별 `<text>`를 메트릭-DB advance 위치(`char_x`)에
+방출하고 `textLength`/`lengthAdjust`로 **가로폭까지 제약**한다. 따라서 위치·자간·가로폭은
+전부 메트릭 DB가 결정하고, **유일하게 폴백 폰트가 좌우하는 차원은 글리프의 세로 잉크/획
+두께(weight)** 이다.
+
+### 11.2 사례 — 한컴 돋움 본문이 PDF보다 두껍게
+
+`samples/3-09월_교육_통합_2023.hwp`(본문 `Haansoft Dotum`)을 PDF 정답지와 **동일 페이지
+픽셀폭(1240px)** 으로 렌더해 같은 본문 줄을 측정:
+
+| | 잉크 높이 | 획 밀도(잉크 픽셀/면적) |
+|--|--|--|
+| rhwp (Noto Sans CJK KR Regular) | 17px | 0.378 |
+| PDF (한컴 돋움) | 17px | 0.265 |
+
+- **잉크 높이 동일** → em-fill(크기) 차이는 없다. 차이는 **획 두께**(rhwp +43%).
+- 원인: 폴백 `Noto Sans KR`(= Noto Sans CJK KR) **Regular 의 획이 한컴 돋움보다 두껍다.**
+
+### 11.3 해결 — 한컴 돋움 weight 에 근접한 대체폰트
+
+오픈소스 한글 고딕은 대부분 0.83~0.89 의 큰 글자면이라 크기로는 차이가 없고, **weight 만
+조절**하면 된다. 실제 rsvg 페이지 밀도(목표 한컴 돋움 0.265):
+
+| 대체 후보 | 페이지 밀도 |
+|----------|-----------|
+| Noto Sans CJK KR Regular(기존) | 0.378 |
+| Noto Sans KR Light (300) | 0.302 |
+| **Noto Sans KR ExtraLight (200)** | **0.277** ← 채택 |
+
+**채택: Noto Sans KR ExtraLight (wght 200)**. 한컴 돋움 형태(중립 고딕)와 동일 Noto 계열,
+OFL, 한글 11,172 완비. `ttfs/opensource/NotoSansKR-ExtraLight.ttf`(네이티브) +
+`assets/fonts/NotoSansKR-ExtraLight.woff2`(웹 canonical source) 번들.
+
+### 11.4 적용 경로와 한계 (중요)
+
+| 경로 | 동작 | 충실도 |
+|------|------|--------|
+| **웹(rhwp-studio)** | `font-loader.ts` `@font-face` 로 ExtraLight 로드. `Haansoft Dotum`·돋움·굴림 → ExtraLight 매핑 | 자동·결정적 |
+| **네이티브 CLI(rsvg)** | SVG 의 `font-family` 체인을 fontconfig 가 해석 → ExtraLight 가 **설치돼 있어야** 적용 (`cp ttfs/opensource/*.ttf ~/.fonts && fc-cache`) | 설치 시 적용 |
+| **`--embed-fonts` @font-face** | typst `subsetter` 가 **cmap 제거** → 브라우저 `<text>` 문자 매핑 불가 | **현재 무효** |
+
+- **임베딩 한계**: PDF 임베딩용 `subsetter`(cmap 불요)를 SVG @font-face 에 재사용하므로
+  cmap 부재로 브라우저가 글리프를 못 찾는다. 실효 충실도 경로는 **폴백 체인 + 폰트시스템
+  설치**다. cmap 보존 서브셋 전환은 별도 이슈 권장.
+- **대체폰트 family 명명 주의**: 번들 폰트는 family/typographic family 모두
+  `"Noto Sans KR ExtraLight"`(weight 400)로 **독립 등록**한다. typographic family 를
+  `"Noto Sans KR"` 로 두면 fontconfig 가 일반 `"Noto Sans KR"` 요청까지 ExtraLight 로
+  가로채는 전역 부작용이 발생한다(Task #1224 Stage 4).
+
+### 11.5 유지보수 체크리스트 — 새 고딕 대체 추가 시
+
+- [ ] `renderer/mod.rs::generic_fallback` sans 체인의 무거운 폰트 직전에 경량 대체 삽입.
+- [ ] `svg.rs::korean_gothic_substitute` 에 대체 파일명 등록(임베딩 후보).
+- [ ] 번들 폰트는 **독립 family 명명**(타 family 의 weight-variant 금지).
+- [ ] 웹은 `font-loader.ts FONT_LIST` + `assets/fonts/*.woff2` canonical source를 동반하고 runtime
+      `fonts/...` URL은 유지.
+- [ ] **레이아웃 불변 확인**: 렌더 폰트만 교체, 메트릭 DB 무변경 → `dump-pages` 전후 동일.

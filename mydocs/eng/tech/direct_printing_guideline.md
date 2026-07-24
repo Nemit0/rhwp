@@ -10,7 +10,7 @@
 
 ## 1. Architecture Vision
 
-Current web-based printing approaches (window.print or PDF download) require **8-10 steps of user interaction and 2 application switches**. Competitors (Hancom WebGian, Polaris, etc.) also remain at the PDF download level.
+Current web-based printing approaches (window.print or PDF download) require **8-10 steps of user interaction and 2 application switches**. Some commercial products (Hancom WebGian, etc.) also remain at the PDF download level.
 
 rhwp **directly generates PDF/PostScript from the Core Engine** and **completes printing within the browser via a Localhost Agent**. The user simply presses Ctrl+P -> selects printer -> prints, **done in 3 steps**.
 

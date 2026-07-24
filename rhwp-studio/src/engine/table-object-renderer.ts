@@ -1,5 +1,63 @@
 import { VirtualScroll } from '@/view/virtual-scroll';
 
+const SVG_NS = 'http://www.w3.org/2000/svg';
+
+function createObjectHandle(cx: number, cy: number, size: number, locked: boolean): HTMLDivElement {
+  const actualSize = locked ? Math.max(size, 10) : size;
+  const half = actualSize / 2;
+  const el = document.createElement('div');
+  el.style.cssText =
+    `position:absolute;` +
+    `left:${cx - half}px;top:${cy - half}px;` +
+    `width:${actualSize}px;height:${actualSize}px;` +
+    `box-sizing:border-box;pointer-events:none;`;
+  if (!locked) {
+    el.style.background = '#fff';
+    el.style.border = '1px solid #000';
+    return el;
+  }
+
+  el.style.background = 'rgba(255,255,255,0.9)';
+  el.style.border = '1px solid #777';
+  el.style.borderRadius = '50%';
+  const slash = document.createElement('div');
+  slash.style.cssText =
+    `position:absolute;left:50%;top:50%;` +
+    `width:${Math.max(actualSize - 1, 1)}px;height:1px;` +
+    `background:#777;transform:translate(-50%,-50%) rotate(45deg);` +
+    `transform-origin:center;`;
+  el.appendChild(slash);
+  return el;
+}
+
+function createSvgRoot(width: string, height: string): SVGSVGElement {
+  const svg = document.createElementNS(SVG_NS, 'svg');
+  svg.style.width = width;
+  svg.style.height = height;
+  svg.style.overflow = 'visible';
+  return svg;
+}
+
+function createSvgLine(
+  x1: number,
+  y1: number,
+  x2: number,
+  y2: number,
+  stroke: string,
+  strokeWidth: number,
+  strokeDasharray?: string,
+): SVGLineElement {
+  const line = document.createElementNS(SVG_NS, 'line');
+  line.setAttribute('x1', String(x1));
+  line.setAttribute('y1', String(y1));
+  line.setAttribute('x2', String(x2));
+  line.setAttribute('y2', String(y2));
+  line.setAttribute('stroke', stroke);
+  line.setAttribute('stroke-width', String(strokeWidth));
+  if (strokeDasharray) line.setAttribute('stroke-dasharray', strokeDasharray);
+  return line;
+}
+
 /** 핸들 방향 */
 export type HandleDirection = 'nw' | 'n' | 'ne' | 'e' | 'se' | 's' | 'sw' | 'w' | 'rotate';
 
@@ -17,6 +75,7 @@ export class TableObjectRenderer {
   private borders: HTMLDivElement[] = [];
   private handles: HandleInfo[] = [];
   private extraEls: HTMLElement[] = [];  // 회전 연결선 등 부가 요소
+  private previewEl: HTMLDivElement | null = null;
   private static readonly HANDLE_SIZE = 8; // px (화면 고정)
   private static readonly ROTATE_HANDLE_SIZE = 10; // px
   private static readonly ROTATE_HANDLE_GAP = 20; // px (상단 중앙에서 위로)
@@ -39,14 +98,106 @@ export class TableObjectRenderer {
   render(
     tableBBox: { pageIndex: number; x: number; y: number; width: number; height: number },
     zoom: number,
+    angleDeg: number = 0,
+    locked: boolean = false,
   ): void {
-    this.renderMultiPage([tableBBox], zoom);
+    if (angleDeg === 0) {
+      this.renderMultiPage([tableBBox], zoom, locked);
+      return;
+    }
+    // 회전된 도형: CSS 회전 테두리 + 실제 회전된 꼭짓점에 핸들 배치
+    this.clear();
+    this.ensureAttached();
+
+    const scrollContent = this.container.querySelector('#scroll-content');
+    const contentWidth = scrollContent?.clientWidth ?? 0;
+    const pageOffset = this.virtualScroll.getPageOffset(tableBBox.pageIndex);
+    const pageDisplayWidth = this.virtualScroll.getPageWidth(tableBBox.pageIndex);
+    const pageLeft = (contentWidth - pageDisplayWidth) / 2;
+
+    const left = pageLeft + tableBBox.x * zoom;
+    const top = pageOffset + tableBBox.y * zoom;
+    const w = tableBBox.width * zoom;
+    const h = tableBBox.height * zoom;
+    const cx = left + w / 2;
+    const cy = top + h / 2;
+
+    const rad = angleDeg * Math.PI / 180;
+    const cosA = Math.cos(rad);
+    const sinA = Math.sin(rad);
+    const rot = (lx: number, ly: number): [number, number] =>
+      [cx + lx * cosA - ly * sinA, cy + lx * sinA + ly * cosA];
+
+    // 외곽선 (CSS 회전)
+    const border = document.createElement('div');
+    border.style.cssText =
+      `position:absolute;` +
+      `left:${left}px;top:${top}px;` +
+      `width:${w}px;height:${h}px;` +
+      `border:1px solid #000;box-sizing:border-box;pointer-events:none;` +
+      `transform:rotate(${angleDeg}deg);`;
+    this.layer.appendChild(border);
+    this.borders.push(border);
+
+    // 8개 핸들 (실제 회전된 꼭짓점/변 중점)
+    const hs = TableObjectRenderer.HANDLE_SIZE;
+    const positions: { dir: HandleDirection; lx: number; ly: number }[] = [
+      { dir: 'nw', lx: -w / 2, ly: -h / 2 },
+      { dir: 'n',  lx: 0,      ly: -h / 2 },
+      { dir: 'ne', lx:  w / 2, ly: -h / 2 },
+      { dir: 'e',  lx:  w / 2, ly: 0      },
+      { dir: 'se', lx:  w / 2, ly:  h / 2 },
+      { dir: 's',  lx: 0,      ly:  h / 2 },
+      { dir: 'sw', lx: -w / 2, ly:  h / 2 },
+      { dir: 'w',  lx: -w / 2, ly: 0      },
+    ];
+    for (const pos of positions) {
+      const [px, py] = rot(pos.lx, pos.ly);
+      const el = createObjectHandle(px, py, hs, locked);
+      this.layer.appendChild(el);
+      this.handles.push({ dir: pos.dir, el, cx: px, cy: py });
+    }
+
+    // 회전 핸들 (도형 위쪽 방향으로 gap만큼 이동)
+    if (this.showRotateHandle) {
+      const rhs = TableObjectRenderer.ROTATE_HANDLE_SIZE;
+      const rhalf = rhs / 2;
+      const gap = TableObjectRenderer.ROTATE_HANDLE_GAP;
+      const [topCx, topCy] = rot(0, -h / 2);
+      const [rcx, rcy] = rot(0, -h / 2 - gap);
+
+      if (!locked) {
+        // 연결선 (SVG)
+        const svgEl = document.createElement('div');
+        svgEl.style.cssText = 'position:absolute;left:0;top:0;width:0;height:0;pointer-events:none;';
+        const svg = createSvgRoot('', '');
+        svg.style.position = 'absolute';
+        svg.style.pointerEvents = 'none';
+        svg.appendChild(createSvgLine(topCx, topCy, rcx, rcy, '#4CAF50', 1));
+        svgEl.appendChild(svg);
+        this.layer.appendChild(svgEl);
+        this.extraEls.push(svgEl);
+      }
+
+      // 원형 회전 핸들
+      const el = locked ? createObjectHandle(rcx, rcy, rhs, true) : document.createElement('div');
+      if (!locked) {
+        el.style.cssText =
+          `position:absolute;` +
+          `left:${rcx - rhalf}px;top:${rcy - rhalf}px;` +
+          `width:${rhs}px;height:${rhs}px;` +
+          `background:#4CAF50;border:1px solid #388E3C;border-radius:50%;box-sizing:border-box;pointer-events:none;`;
+      }
+      this.layer.appendChild(el);
+      this.handles.push({ dir: 'rotate', el, cx: rcx, cy: rcy });
+    }
   }
 
   /** 다중 페이지 표 바운딩박스 기준으로 외곽선 + 핸들을 렌더링한다 */
   renderMultiPage(
     bboxes: { pageIndex: number; x: number; y: number; width: number; height: number }[],
     zoom: number,
+    locked: boolean = false,
   ): void {
     this.clear();
     this.ensureAttached();
@@ -78,7 +229,6 @@ export class TableObjectRenderer {
 
     // 각 페이지 bbox마다 8개 핸들 생성
     const hs = TableObjectRenderer.HANDLE_SIZE;
-    const half = hs / 2;
     for (const bbox of bboxes) {
       const po = this.virtualScroll.getPageOffset(bbox.pageIndex);
       const pdw = this.virtualScroll.getPageWidth(bbox.pageIndex);
@@ -100,12 +250,7 @@ export class TableObjectRenderer {
       ];
 
       for (const pos of positions) {
-        const el = document.createElement('div');
-        el.style.cssText =
-          `position:absolute;` +
-          `left:${pos.cx - half}px;top:${pos.cy - half}px;` +
-          `width:${hs}px;height:${hs}px;` +
-          `background:#fff;border:1px solid #000;box-sizing:border-box;pointer-events:none;`;
+        const el = createObjectHandle(pos.cx, pos.cy, hs, locked);
         this.layer.appendChild(el);
         this.handles.push({ dir: pos.dir, el, cx: pos.cx, cy: pos.cy });
       }
@@ -118,23 +263,27 @@ export class TableObjectRenderer {
         const rcx = l + w / 2;
         const rcy = t - gap;
 
-        // 연결선: 상단 중앙 → 회전 핸들
-        const line = document.createElement('div');
-        line.style.cssText =
-          `position:absolute;` +
-          `left:${rcx}px;top:${rcy}px;` +
-          `width:1px;height:${gap}px;` +
-          `background:#4CAF50;pointer-events:none;`;
-        this.layer.appendChild(line);
-        this.extraEls.push(line);
+        if (!locked) {
+          // 연결선: 상단 중앙 → 회전 핸들
+          const line = document.createElement('div');
+          line.style.cssText =
+            `position:absolute;` +
+            `left:${rcx}px;top:${rcy}px;` +
+            `width:1px;height:${gap}px;` +
+            `background:#4CAF50;pointer-events:none;`;
+          this.layer.appendChild(line);
+          this.extraEls.push(line);
+        }
 
         // 원형 회전 핸들
-        const el = document.createElement('div');
-        el.style.cssText =
-          `position:absolute;` +
-          `left:${rcx - rhalf}px;top:${rcy - rhalf}px;` +
-          `width:${rhs}px;height:${rhs}px;` +
-          `background:#4CAF50;border:1px solid #388E3C;border-radius:50%;box-sizing:border-box;pointer-events:none;`;
+        const el = locked ? createObjectHandle(rcx, rcy, rhs, true) : document.createElement('div');
+        if (!locked) {
+          el.style.cssText =
+            `position:absolute;` +
+            `left:${rcx - rhalf}px;top:${rcy - rhalf}px;` +
+            `width:${rhs}px;height:${rhs}px;` +
+            `background:#4CAF50;border:1px solid #388E3C;border-radius:50%;box-sizing:border-box;pointer-events:none;`;
+        }
         this.layer.appendChild(el);
         this.handles.push({ dir: 'rotate', el, cx: rcx, cy: rcy });
       }
@@ -166,7 +315,9 @@ export class TableObjectRenderer {
     if (!midPoint) {
       const svgEl = document.createElement('div');
       svgEl.style.cssText = 'position:absolute;left:0;top:0;width:100%;height:100%;pointer-events:none;';
-      svgEl.innerHTML = `<svg style="width:100%;height:100%;overflow:visible"><line x1="${sx}" y1="${sy}" x2="${ex}" y2="${ey}" stroke="#000" stroke-width="1" stroke-dasharray="4,2"/></svg>`;
+      const svg = createSvgRoot('100%', '100%');
+      svg.appendChild(createSvgLine(sx, sy, ex, ey, '#000', 1, '4,2'));
+      svgEl.appendChild(svg);
       this.layer.appendChild(svgEl);
       this.extraEls.push(svgEl);
     }
@@ -219,18 +370,61 @@ export class TableObjectRenderer {
 
   /** 모든 오버레이를 제거한다 */
   clear(): void {
-    for (const b of this.borders) {
-      b.remove();
-    }
+    for (const b of this.borders) b.remove();
     this.borders = [];
-    for (const h of this.handles) {
-      h.el.remove();
-    }
+    for (const h of this.handles) h.el.remove();
     this.handles = [];
-    for (const el of this.extraEls) {
-      el.remove();
-    }
+    for (const el of this.extraEls) el.remove();
     this.extraEls = [];
+    this.clearDragPreview();
+  }
+
+  /** 핸들·연결선은 남긴 채 테두리만 제거한다 (드래그 예비선 교체용) */
+  private clearBordersOnly(): void {
+    for (const b of this.borders) b.remove();
+    this.borders = [];
+  }
+
+  /** 드래그 예비선을 제거한다 */
+  clearDragPreview(): void {
+    if (this.previewEl) {
+      this.previewEl.remove();
+      this.previewEl = null;
+    }
+  }
+
+  /** 핸들은 그대로 두고 회전각이 적용된 드래그 예비 테두리만 렌더링한다 */
+  renderDragPreview(
+    bbox: { pageIndex: number; x: number; y: number; width: number; height: number },
+    zoom: number,
+    angleDeg: number = 0,
+  ): void {
+    this.clearBordersOnly();
+    this.clearDragPreview();
+    this.ensureAttached();
+
+    const scrollContent = this.container.querySelector('#scroll-content');
+    const contentWidth = scrollContent?.clientWidth ?? 0;
+    const pageOffset = this.virtualScroll.getPageOffset(bbox.pageIndex);
+    const pageDisplayWidth = this.virtualScroll.getPageWidth(bbox.pageIndex);
+    const pageLeft = (contentWidth - pageDisplayWidth) / 2;
+
+    const left = pageLeft + bbox.x * zoom;
+    const top = pageOffset + bbox.y * zoom;
+    const width = bbox.width * zoom;
+    const height = bbox.height * zoom;
+
+    const el = document.createElement('div');
+    el.style.cssText =
+      `position:absolute;` +
+      `left:${left}px;top:${top}px;` +
+      `width:${width}px;height:${height}px;` +
+      `border:1px solid #000;box-sizing:border-box;pointer-events:none;`;
+    if (angleDeg !== 0) {
+      el.style.transform = `rotate(${angleDeg}deg)`;
+    }
+    this.layer.appendChild(el);
+    this.previewEl = el;
   }
 
   /** 레이어가 DOM에 없으면 재부착한다 */

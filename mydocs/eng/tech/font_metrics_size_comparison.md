@@ -1,4 +1,4 @@
-# Font Metrics DB Size Comparison (rhwp vs Hancom vs Polaris)
+# Font Metrics DB Size Comparison (rhwp vs Hancom vs a commercial web office)
 
 ## 1. WASM Binary Size
 
@@ -8,8 +8,8 @@
 
 ## 2. Three-Way Comparison
 
-| Item | rhwp | Hancom WebGian | Polaris Office |
-|------|------|---------------|----------------|
+| Item | rhwp | Hancom WebGian | A commercial web office |
+|------|------|---------------|------------------------|
 | **Total WASM** | **1.83 MB** | N/A (server-side rendering) | **~19 MB** |
 | **Metrics Method** | Rust static arrays (WASM embedded) | JS .hft modules (dynamically loaded) | WASM embedded (presumed) |
 | **Metrics Size** | ~475 KB (WASM binary) | ~2-5 MB (387 JS modules) | Included in binary |
@@ -45,7 +45,7 @@ Current 582 entries result in 475 KB increment. Average ~816 bytes per entry.
 ## 5. Competitive Advantage Analysis
 
 ### rhwp Advantages
-- Total WASM size is **1/10 of Polaris** (1.83 MB vs 19 MB)
+- Total WASM size is **1/10 of the comparable commercial web office** (1.83 MB vs 19 MB)
 - **13% higher font coverage than Hancom** (386 vs 342 families)
 - **Single binary** load (Hancom requires sequential loading of 387 modules)
 - Metrics usable in native builds as well (Hancom is browser-only)

@@ -9,9 +9,9 @@
  * 본 제품은 한글과컴퓨터의 한글 문서 파일(.hwp) 공개 문서를 참고하여 개발하였습니다.
  */
 
-const DEFAULT_STUDIO_URL = 'https://edwardkim.github.io/rhwp/';
+import { EditorTransport } from './transport.js';
 
-let requestId = 0;
+const DEFAULT_STUDIO_URL = 'https://edwardkim.github.io/rhwp/';
 
 /**
  * HWP 에디터를 생성하여 지정된 컨테이너에 마운트합니다.
@@ -53,9 +53,21 @@ export async function createEditor(container, options = {}) {
   });
 
   // WASM 초기화 대기 (ready 메서드로 확인)
-  const editor = new RhwpEditor(iframe);
-  await editor._waitReady();
-  return editor;
+  let transport;
+  try {
+    transport = new EditorTransport(iframe, studioUrl, {
+      requestTimeoutMs: options.requestTimeoutMs,
+      handshakeTimeoutMs: options.handshakeTimeoutMs,
+    });
+    await transport.connect();
+    const editor = new RhwpEditor(iframe, transport);
+    await editor._waitReady();
+    return editor;
+  } catch (error) {
+    transport?.destroy();
+    iframe.remove();
+    throw error;
+  }
 }
 
 /**
@@ -63,25 +75,10 @@ export async function createEditor(container, options = {}) {
  *
  * iframe 내부의 rhwp-studio와 postMessage로 통신합니다.
  */
-class RhwpEditor {
-  constructor(iframe) {
+export class RhwpEditor {
+  constructor(iframe, transport) {
     this._iframe = iframe;
-    this._pending = new Map();
-
-    // 응답 수신 리스너
-    window.addEventListener('message', (e) => {
-      if (e.data?.type === 'rhwp-response' && e.data.id != null) {
-        const resolver = this._pending.get(e.data.id);
-        if (resolver) {
-          this._pending.delete(e.data.id);
-          if (e.data.error) {
-            resolver.reject(new Error(e.data.error));
-          } else {
-            resolver.resolve(e.data.result);
-          }
-        }
-      }
-    });
+    this._transport = transport;
   }
 
   /**
@@ -89,21 +86,7 @@ class RhwpEditor {
    * @internal
    */
   _request(method, params = {}) {
-    return new Promise((resolve, reject) => {
-      const id = ++requestId;
-      this._pending.set(id, { resolve, reject });
-      this._iframe.contentWindow.postMessage(
-        { type: 'rhwp-request', id, method, params },
-        '*'
-      );
-      // 10초 타임아웃
-      setTimeout(() => {
-        if (this._pending.has(id)) {
-          this._pending.delete(id);
-          reject(new Error(`Request timeout: ${method}`));
-        }
-      }, 10000);
-    });
+    return this._transport.request(method, params);
   }
 
   /** WASM 초기화 완료 대기 @internal */
@@ -136,8 +119,7 @@ class RhwpEditor {
    * ```
    */
   async loadFile(data, fileName = 'document.hwp') {
-    const bytes = data instanceof ArrayBuffer ? Array.from(new Uint8Array(data)) : Array.from(data);
-    return this._request('loadFile', { data: bytes, fileName });
+    return this._request('loadFile', { data, fileName });
   }
 
   /**
@@ -158,6 +140,64 @@ class RhwpEditor {
   }
 
   /**
+   * 선택된 renderer와 페이지별 CanvasKit readiness 진단을 반환합니다.
+   * @param page - 0부터 시작하는 페이지 번호
+   */
+  async getRendererDiagnostics(page = 0) {
+    if (!Number.isSafeInteger(page) || page < 0) {
+      throw new TypeError('page must be a non-negative safe integer');
+    }
+    if (!this._transport.supports('renderer-diagnostics-v1')) {
+      throw new Error('Renderer diagnostics v1 is not supported by this Studio');
+    }
+    const result = await this._request('getRendererDiagnostics', { page });
+    if (result?.schemaVersion !== 1 || result?.page?.index !== page) {
+      throw new Error('Studio returned invalid renderer diagnostics v1');
+    }
+    return result;
+  }
+
+  /**
+   * 현재 문서를 HWP 바이너리로 내보냅니다.
+   * @returns {Promise<Uint8Array>} HWP 파일 bytes
+   */
+  async exportHwp() {
+    const result = await this._request('exportHwp');
+    return result instanceof Uint8Array ? result : new Uint8Array(result || []);
+  }
+
+  /**
+   * 현재 문서를 HWPX(ZIP+XML) 바이너리로 내보냅니다.
+   * @returns {Promise<Uint8Array>} HWPX 파일 bytes
+   */
+  async exportHwpx() {
+    const result = await this._request('exportHwpx');
+    return result instanceof Uint8Array ? result : new Uint8Array(result || []);
+  }
+
+  /** 현재 문서를 HML(XML) 바이너리로 내보냅니다. */
+  async exportHml() {
+    const result = await this._request('exportHml');
+    return result instanceof Uint8Array ? result : new Uint8Array(result || []);
+  }
+
+  /** 현재 문서의 HML 저장 가능 여부와 blocker를 반환합니다. */
+  async getHmlSaveState() {
+    return this._request('getHmlSaveState');
+  }
+
+  /**
+   * HWP 직렬화 + 자기 재로드 검증 메타데이터를 반환합니다 (#178).
+   *
+   * 검증 메타데이터만 반환하며, 실제 HWP bytes 가 필요하면 `exportHwp()` 를 별도 호출하세요.
+   *
+   * @returns {Promise<{bytesLen: number, pageCountBefore: number, pageCountAfter: number, recovered: boolean}>}
+   */
+  async exportHwpVerify() {
+    return this._request('exportHwpVerify');
+  }
+
+  /**
    * iframe 엘리먼트를 반환합니다.
    */
   get element() {
@@ -168,7 +208,7 @@ class RhwpEditor {
    * 에디터를 제거합니다.
    */
   destroy() {
+    this._transport.destroy();
     this._iframe.remove();
-    this._pending.clear();
   }
 }

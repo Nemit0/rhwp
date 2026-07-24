@@ -68,11 +68,35 @@ export class HwpCtrl {
     this.cursorPos = 0;
   }
 
-  /** HWP 파일로 내보내기 */
+  /** 원본 파일 형식에 맞게 HWP 또는 HWPX로 내보내기 */
   SaveAs(filename: string, format?: string, arg?: string): boolean {
     try {
-      const bytes = this.wasmDoc.exportHwp();
-      const blob = new Blob([bytes as BlobPart], { type: 'application/x-hwp' });
+      const sourceFormat = this.wasmDoc.getSourceFormat();
+      // HWPX 직접 저장 활성화(직렬화 충실도 확보). format 지정 우선, 없으면 출처 따름.
+      const isHwpx = format === 'hwpx' || (!format && sourceFormat === 'hwpx');
+      console.log(`[hwpctl] SaveAs: filename=${filename}, sourceFormat=${sourceFormat}, isHwpx=${isHwpx}`);
+
+      let bytes: Uint8Array;
+      let mimeType: string;
+      let ext: string;
+
+      if (isHwpx) {
+        bytes = this.wasmDoc.exportHwpx();
+        mimeType = 'application/hwp+zip';
+        ext = '.hwpx';
+      } else {
+        bytes = this.wasmDoc.exportHwp();
+        mimeType = 'application/x-hwp';
+        ext = '.hwp';
+      }
+
+      // 파일명에 확장자가 없으면 원본 형식에 맞게 추가
+      if (!filename.endsWith(ext) && !filename.endsWith('.hwp') && !filename.endsWith('.hwpx')) {
+        filename += ext;
+      }
+
+      console.log(`[hwpctl] SaveAs: ${isHwpx ? 'HWPX' : 'HWP'}, ${bytes.length} bytes, ext=${ext}`);
+      const blob = new Blob([bytes as BlobPart], { type: mimeType });
       const url = URL.createObjectURL(blob);
       const a = document.createElement('a');
       a.href = url;

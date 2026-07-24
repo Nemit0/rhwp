@@ -112,7 +112,7 @@ In "Hangul for Everyone," "everyone" means:
 
 rhwp's position: **High accuracy + Free open source**
 
-Existing open-source HWP tools have low accuracy; commercial viewers are expensive. rhwp delivers Hancom-level accuracy for free.
+Existing open-source HWP tools differ significantly in accuracy; commercial viewers are expensive. rhwp delivers accuracy approaching Hancom's, for free.
 
 ## Marketing Channels
 

@@ -325,7 +325,7 @@ Currently, **rhwp (Rust) is the only** open-source project capable of **programm
 - **Binary reverse engineering (hwplib)**: Reached L2 but fails L3 rules, resulting in "corrupted file." Also lacks parsing/editing of click-here field command internals
 - **Binary spec-based (openhwp, etc.)**: Hancom-compatible writing is **fundamentally impossible** with L1 alone
 
-rhwp is the **only open-source HWP viewer/editor** that supports both precise rendering (pagination, table splitting, headers/footers) and editor features (text editing, click-here editing, field data binding, image insertion). This is backed by 24 errata items (including 12 independently discovered L3 rules) and 18 troubleshooting records of accumulated reverse engineering knowledge.
+rhwp is among the **rare open-source HWP viewers/editors** (within the scope we have reviewed) that cover both precise rendering (pagination, table splitting, headers/footers) and editor features (text editing, click-here editing, field data binding, image insertion). This is backed by 24 errata items (including 12 independently discovered L3 rules) and 18 troubleshooting records of accumulated reverse engineering knowledge.
 
 ---
 

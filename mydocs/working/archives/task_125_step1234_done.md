@@ -44,7 +44,7 @@
 | `src/renderer/mod.rs` | font_metrics_data 모듈 등록 | 수정 |
 | `src/renderer/layout.rs` | 내장 메트릭 우선 사용 파이프라인 | 수정 |
 | `Cargo.toml` | font-metric-gen 바이너리 타겟 | 수정 |
-| `mydocs/tech/font_metrics_size_comparison.md` | 3사 크기 비교 (Noto 포함) | 신규 |
+| `mydocs/tech/investigations/issue-124/font_metrics_size_comparison.md` | 3사 크기 비교 (Noto 포함) | 신규 |
 
 ## 검증 결과
 
@@ -57,8 +57,8 @@
 
 ## 크기 비교 요약
 
-| | rhwp | 한컴 | 폴라리스 |
-|--|------|------|---------|
+| | rhwp | 한컴 | 일부 상용 웹오피스 |
+|--|------|------|-------------------|
 | WASM | **1.83 MB** | N/A | ~19 MB |
 | 폰트 패밀리 | **386개** | 342개 | 미상 |
 | 폰트 변형 | **582개** | 387개 | 미상 |

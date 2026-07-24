@@ -39,7 +39,7 @@ cat > "${PKG_DIR}/package.json" << EOF
   ],
   "repository": {
     "type": "git",
-    "url": "https://github.com/edwardkim/rhwp"
+    "url": "git+https://github.com/edwardkim/rhwp.git"
   },
   "homepage": "https://edwardkim.github.io/rhwp/",
   "bugs": {

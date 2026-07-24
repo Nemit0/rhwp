@@ -2,7 +2,7 @@
 
 ## 1. Goal
 
-Instead of Canvas 2D `fillText()`, **render font glyph outlines (Bezier curves) directly as Canvas Paths** to achieve vector text quality on par with Hancom/Polaris/PDF.js.
+Instead of Canvas 2D `fillText()`, **render font glyph outlines (Bezier curves) directly as Canvas Paths** to achieve vector text quality on par with Hancom and other commercial products/PDF.js.
 
 ## 2. Current Status Analysis
 
@@ -17,7 +17,7 @@ HWP -> DocInfo.fonts -> ResolvedCharStyle -> TextStyle -> draw_text()
 ### Issues
 - `fillText()` is dependent on the browser's text rasterizer
 - Only supports grayscale antialiasing (no subpixel)
-- Text appears softer compared to Hancom/Polaris at zoom magnification (soft edges)
+- Text appears softer compared to Hancom and other commercial products at zoom magnification (soft edges)
 
 ### Existing Assets
 - `ttfs/hamchob-r.ttf` -- HamChoRom Batang (26.5MB)

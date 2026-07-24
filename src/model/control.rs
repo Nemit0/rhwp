@@ -2,14 +2,14 @@
 
 use std::collections::HashMap;
 
-use super::paragraph::Paragraph;
-use super::table::Table;
-use super::shape::{CommonObjAttr, ShapeObject};
-use super::image::Picture;
-use super::header_footer::{Header, Footer};
-use super::footnote::{Footnote, Endnote};
-use super::page::ColumnDef;
 use super::document::SectionDef;
+use super::footnote::{Endnote, Footnote};
+use super::header_footer::{Footer, Header};
+use super::image::Picture;
+use super::page::ColumnDef;
+use super::paragraph::Paragraph;
+use super::shape::{CommonObjAttr, ShapeObject};
+use super::table::Table;
 
 /// 문단 내 컨트롤 (확장 컨트롤)
 #[derive(Debug, Clone)]
@@ -60,7 +60,7 @@ pub enum Control {
     Unknown(UnknownControl),
 }
 
-/// 수식 ('eqed' 컨트롤, HWP 스펙 표 106-107)
+/// 수식 ('eqed' 컨트롤, HWP 스펙 표 105)
 #[derive(Debug, Clone, Default)]
 pub struct Equation {
     /// 개체 공통 속성 (위치, 크기, 배치)
@@ -73,10 +73,14 @@ pub struct Equation {
     pub color: u32,
     /// 기준선 오프셋
     pub baseline: i16,
-    /// 수식 글꼴명
-    pub font_name: String,
+    /// 미지의 UINT16 필드 (HWP5 spec errata) — hwplib `ForEQEdit.readUInt2()` 정합.
+    /// HWP5 spec 표 105 에 누락되어 있으나 한컴 실제 저장본에 baseline 과 version_info
+    /// 사이에 UINT16 zero 가 위치. Task #1061 발견.
+    pub unknown: u16,
     /// 버전 정보
     pub version_info: String,
+    /// 수식 글꼴명
+    pub font_name: String,
     /// 라운드트립용 원본 ctrl_data
     pub raw_ctrl_data: Vec<u8>,
 }
@@ -159,10 +163,21 @@ pub struct Hyperlink {
 /// 덧말 ('tdut' 컨트롤)
 #[derive(Debug, Clone, Default)]
 pub struct Ruby {
-    /// 덧말 텍스트
+    /// 기준 텍스트 (`<hp:mainText>`) — 덧말이 달리는 본문 글자. (#1587)
+    /// 파서가 para.text 에 넣지 않고 여기 보존한다(시각 충실도 핵심).
+    pub main_text: String,
+    /// 덧말 텍스트 (`<hp:subText>`)
     pub ruby_text: String,
-    /// 정렬 방식
-    pub alignment: u8,
+    /// 위치 (`posType`): 0=TOP, 1=BOTTOM. (#1587)
+    pub pos_type: u8,
+    /// 정렬 (`align`): 0=LEFT, 1=RIGHT, 2=CENTER. (#1587)
+    pub align: u8,
+    /// 덧말 크기 비율 (`szRatio`, %). (#1587)
+    pub sz_ratio: u8,
+    /// 옵션 비트 (`option`). (#1587)
+    pub option: u32,
+    /// 글자 스타일 참조 (`styleIDRef`). (#1587)
+    pub style_id_ref: u16,
 }
 
 /// 글자 겹침 ('tcps' 컨트롤, HWP 스펙 표 152)
@@ -223,6 +238,14 @@ pub struct Field {
     pub ctrl_data_name: Option<String>,
     /// 메모 인덱스 (hwplib: memoIndex)
     pub memo_index: u32,
+    /// 메모 본문 문단 리스트 (`fieldBegin type="MEMO"` 내부 subList)
+    pub memo_paragraphs: Vec<Paragraph>,
+    /// HWPX `<hp:parameters>` 요소 원문 verbatim (#1391).
+    ///
+    /// 전 fieldBegin 타입(MEMO/HYPERLINK/FORMULA/BOOKMARK 등)이 parameters 를
+    /// 가지나 IR 은 Command/Number 만 추출하므로, 무손실 roundtrip 을 위해 원문을
+    /// 그대로 보존한다 (HWP5 경로엔 무관 — HWPX 파서만 적재).
+    pub raw_parameters_xml: Option<String>,
 }
 
 impl Field {
@@ -269,12 +292,17 @@ impl Field {
         let value_start = key_start + key.len() + ws_start + colon_pos + 1;
         let value_part = &self.command[value_start..];
         // 다음 키워드(" HelpState:", " Direction:", " Name:" 등)까지
-        let end = value_part.find(" HelpState:")
+        let end = value_part
+            .find(" HelpState:")
             .or_else(|| value_part.find(" Direction:"))
             .or_else(|| value_part.find(" Name:"))
             .unwrap_or(value_part.len());
         let value = value_part[..end].trim();
-        if value.is_empty() { None } else { Some(value) }
+        if value.is_empty() {
+            None
+        } else {
+            Some(value)
+        }
     }
 
     /// 누름틀(ClickHere) command에서 메모(HelpState) 텍스트를 추출한다.
@@ -290,24 +318,28 @@ impl Field {
         self.properties & 1 != 0
     }
 
-    /// 누름틀 command 문자열을 재구축한다.
+    /// 누름틀(ClickHere) command 문자열을 한컴 포맷으로 재구축한다.
     ///
-    /// 한컴은 wstring 값 뒤에 공백을 기대하므로 trim_end()를 호출하지 않는다.
-    pub fn build_clickhere_command(guide: &str, memo: &str, name: &str) -> String {
+    /// 한컴 정답지(`samples/field-01.hwp`, `form-01.hwp`) 동형 (#1434):
+    /// ```text
+    /// Clickhere:set:{N}:Direction:wstring:{gl}:{guide} HelpState:wstring:{ml}:{memo}␣␣
+    /// ```
+    /// - HelpState 값 뒤 공백 2개 (구분 1 + trailing 1).
+    /// - `set` 길이 N = inner 글자수 − 1 (마지막 trailing 공백 제외).
+    /// - 필드 이름(Name)은 command 에 넣지 않는다 — CTRL_DATA 레코드(0x57) 전담.
+    ///   (이전엔 Name 키를 넣어 한컴이 Direction 범위를 잘못 잘라 안내문 바인딩 실패.)
+    pub fn build_clickhere_command(guide: &str, memo: &str) -> String {
         let guide_len = guide.chars().count();
         let memo_len = memo.chars().count();
-        let name_len = name.chars().count();
 
-        // Direction + HelpState + Name (Name이 비어있으면 생략)
-        // 각 wstring 값 뒤에 공백 1개를 유지한다 (한컴 호환).
-        let mut inner = format!("Direction:wstring:{}:{} HelpState:wstring:{}:{} ",
-            guide_len, guide, memo_len, memo);
-        if !name.is_empty() {
-            inner.push_str(&format!("Name:wstring:{}:{} ", name_len, name));
-        }
-        // trim_end()를 호출하지 않고 trailing space를 보존한다.
-        let total_len = inner.chars().count();
-        format!("Clickhere:set:{}:{}", total_len, inner)
+        // HelpState 값 뒤 공백 2개 (한컴 정답지 동형).
+        let inner = format!(
+            "Direction:wstring:{}:{} HelpState:wstring:{}:{}  ",
+            guide_len, guide, memo_len, memo
+        );
+        // set 길이는 마지막 trailing 공백 1개를 제외한 inner 글자수.
+        let set_len = inner.chars().count() - 1;
+        format!("Clickhere:set:{}:{}", set_len, inner)
     }
 
     /// FieldType을 문자열로 변환한다.
@@ -354,7 +386,7 @@ pub enum FieldType {
 }
 
 /// 양식 개체 타입
-#[derive(Debug, Clone, Copy, PartialEq, Default)]
+#[derive(Debug, Clone, Copy, PartialEq, Default, serde::Serialize)]
 pub enum FormType {
     /// 명령 단추
     #[default]
@@ -409,7 +441,9 @@ mod tests {
 
     #[test]
     fn test_control_variants() {
-        let ctrl = Control::Bookmark(Bookmark { name: "test".to_string() });
+        let ctrl = Control::Bookmark(Bookmark {
+            name: "test".to_string(),
+        });
         match ctrl {
             Control::Bookmark(bm) => assert_eq!(bm.name, "test"),
             _ => panic!("Expected Bookmark"),
@@ -419,6 +453,61 @@ mod tests {
     #[test]
     fn test_field_type_default() {
         assert_eq!(FieldType::default(), FieldType::Unknown);
+    }
+
+    // ---------- #1434: 누름틀 command 한컴 포맷 정합 ----------
+
+    /// 한컴 정답지(field-01/form-01)의 command 문자열과 바이트 동형이어야 한다.
+    #[test]
+    fn task1434_clickhere_command_hancom_format() {
+        // 한컴 원본: `Clickhere:set:48:Direction:wstring:6:여기에 입력 HelpState:wstring:0:  `
+        assert_eq!(
+            Field::build_clickhere_command("여기에 입력", ""),
+            "Clickhere:set:48:Direction:wstring:6:여기에 입력 HelpState:wstring:0:  "
+        );
+        // 한컴 원본: `Clickhere:set:47:Direction:wstring:5:제목 입력 HelpState:wstring:0:  `
+        assert_eq!(
+            Field::build_clickhere_command("제목 입력", ""),
+            "Clickhere:set:47:Direction:wstring:5:제목 입력 HelpState:wstring:0:  "
+        );
+    }
+
+    /// command 에 Name 키가 들어가면 안 된다 (이름은 CTRL_DATA 전담). 한컴이 Name 키를
+    /// 만나면 Direction 범위를 잘못 잘라 안내문 바인딩 실패 (#1434 회귀 가드).
+    #[test]
+    fn task1434_command_has_no_name_key() {
+        let cmd = Field::build_clickhere_command("여기에 입력", "");
+        assert!(
+            !cmd.contains("Name:"),
+            "command 에 Name 키가 있으면 한컴 안내문 바인딩 실패: {cmd}"
+        );
+    }
+
+    /// 생성한 command 에서 guide_text/memo_text 가 정확히 재추출되어야 한다 (왕복 정합).
+    #[test]
+    fn task1434_command_guide_memo_roundtrip() {
+        let field = Field {
+            field_type: FieldType::ClickHere,
+            command: Field::build_clickhere_command("여기에 입력", "도움말"),
+            ..Default::default()
+        };
+        assert_eq!(field.guide_text(), Some("여기에 입력"));
+        assert_eq!(field.memo_text(), Some("도움말"));
+    }
+
+    /// set 길이는 inner 글자수 − 1 (마지막 trailing 공백 제외) 규칙을 따른다.
+    #[test]
+    fn task1434_set_length_excludes_trailing_space() {
+        let cmd = Field::build_clickhere_command("a", "");
+        // inner = "Direction:wstring:1:a HelpState:wstring:0:  " (trailing 2개)
+        let inner = cmd.strip_prefix("Clickhere:set:").unwrap();
+        let (set_str, body) = inner.split_once(':').unwrap();
+        let set_len: usize = set_str.parse().unwrap();
+        assert_eq!(
+            set_len,
+            body.chars().count() - 1,
+            "set 길이 = inner 글자수 − 1 (trailing 공백 제외): {cmd}"
+        );
     }
 
     #[test]

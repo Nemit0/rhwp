@@ -14,8 +14,8 @@ use super::tags;
 use crate::model::bin_data::{BinData, BinDataCompression, BinDataStatus, BinDataType};
 use crate::model::document::{DocInfo, DocProperties, RawRecord};
 use crate::model::style::{
-    Alignment, BorderFill, BorderLine, BorderLineType, Bullet, CharShape, DiagonalLine, Fill,
-    FillType, Font, GradientFill, ImageFill, ImageFillMode, LineSpacingType, Numbering,
+    Alignment, BorderFill, BorderLine, BorderLineType, Bullet, CenterLine, CharShape, DiagonalLine,
+    Fill, FillType, Font, GradientFill, ImageFill, ImageFillMode, LineSpacingType, Numbering,
     NumberingHead, ParaShape, SolidFill, Style, TabDef, TabItem, UnderlineType,
 };
 
@@ -58,8 +58,7 @@ struct IdMappings {
 ///
 /// 압축 해제된 DocInfo 레코드 바이트를 파싱하여 DocInfo, DocProperties를 반환.
 pub fn parse_doc_info(data: &[u8]) -> Result<(DocInfo, DocProperties), DocInfoError> {
-    let records =
-        Record::read_all(data).map_err(|e| DocInfoError::RecordError(e.to_string()))?;
+    let records = Record::read_all(data).map_err(|e| DocInfoError::RecordError(e.to_string()))?;
 
     let mut doc_info = DocInfo::default();
     let mut doc_props = DocProperties::default();
@@ -93,8 +92,7 @@ pub fn parse_doc_info(data: &[u8]) -> Result<(DocInfo, DocProperties), DocInfoEr
 
                 // 현재 언어 카테고리 결정
                 while current_lang < 7
-                    && lang_counts_consumed[current_lang]
-                        >= id_mappings.font_counts[current_lang]
+                    && lang_counts_consumed[current_lang] >= id_mappings.font_counts[current_lang]
                 {
                     current_lang += 1;
                 }
@@ -168,9 +166,21 @@ fn parse_document_properties(data: &[u8]) -> Result<DocProperties, DocInfoError>
         picture_start_num: r.read_u16().unwrap_or(1),
         table_start_num: r.read_u16().unwrap_or(1),
         equation_start_num: r.read_u16().unwrap_or(1),
-        caret_list_id: if r.remaining() >= 4 { r.read_u32().unwrap_or(0) } else { 0 },
-        caret_para_id: if r.remaining() >= 4 { r.read_u32().unwrap_or(0) } else { 0 },
-        caret_char_pos: if r.remaining() >= 4 { r.read_u32().unwrap_or(0) } else { 0 },
+        caret_list_id: if r.remaining() >= 4 {
+            r.read_u32().unwrap_or(0)
+        } else {
+            0
+        },
+        caret_para_id: if r.remaining() >= 4 {
+            r.read_u32().unwrap_or(0)
+        } else {
+            0
+        },
+        caret_char_pos: if r.remaining() >= 4 {
+            r.read_u32().unwrap_or(0)
+        } else {
+            0
+        },
     })
 }
 
@@ -201,7 +211,9 @@ fn parse_id_mappings(data: &[u8]) -> Result<IdMappings, DocInfoError> {
 
 fn parse_bin_data(data: &[u8]) -> Result<BinData, DocInfoError> {
     let mut r = ByteReader::new(data);
-    let attr = r.read_u16().map_err(|e| DocInfoError::IoError(e.to_string()))?;
+    let attr = r
+        .read_u16()
+        .map_err(|e| DocInfoError::IoError(e.to_string()))?;
 
     let data_type = match attr & 0x000F {
         0 => BinDataType::Link,
@@ -260,12 +272,29 @@ fn parse_face_name(data: &[u8]) -> Result<Font, DocInfoError> {
         .map_err(|e| DocInfoError::IoError(e.to_string()))?;
 
     let alt_name = if attr & 0x80 != 0 {
+        let _alt_type = r.read_u8().unwrap_or(0);
         r.read_hwp_string().ok()
     } else {
         None
     };
 
-    let default_name = if attr & 0x40 != 0 {
+    let type_info = if attr & 0x40 != 0 {
+        let mut bytes = [0u8; 10];
+        let mut ok = true;
+        for b in &mut bytes {
+            if let Ok(value) = r.read_u8() {
+                *b = value;
+            } else {
+                ok = false;
+                break;
+            }
+        }
+        ok.then_some(bytes)
+    } else {
+        None
+    };
+
+    let default_name = if attr & 0x20 != 0 {
         r.read_hwp_string().ok()
     } else {
         None
@@ -275,8 +304,14 @@ fn parse_face_name(data: &[u8]) -> Result<Font, DocInfoError> {
         raw_data: None,
         name,
         alt_type: attr & 0x03,
+        is_embedded: false,
+        bin_item_id_ref: String::new(),
+        resolved_bin_data_id: None,
         alt_name,
+        type_info,
         default_name,
+        // HWP5 FACE_NAME 에는 HWPX substFont 개념이 없다.
+        subst_font: None,
     })
 }
 
@@ -330,6 +365,7 @@ fn parse_border_fill(data: &[u8]) -> Result<BorderFill, DocInfoError> {
         attr,
         borders,
         diagonal,
+        center_line: CenterLine::from_hwp_attr(attr),
         fill,
     })
 }
@@ -395,6 +431,7 @@ pub(crate) fn parse_fill(r: &mut ByteReader) -> Fill {
             center_x: cx,
             center_y: cy,
             blur,
+            step_center: 0,
             colors,
             positions,
         });
@@ -437,7 +474,11 @@ pub(crate) fn parse_fill(r: &mut ByteReader) -> Fill {
     if additional_size > 0 {
         if fill_type_val & 0x04 != 0 {
             // 그라데이션 번짐 정도 중심 (blurring center)
-            let _blurring_center = r.read_u8().unwrap_or(0);
+            if let Some(ref mut grad) = fill.gradient {
+                grad.step_center = r.read_u8().unwrap_or(0);
+            } else {
+                let _ = r.read_u8();
+            }
         } else {
             let _ = r.skip(additional_size);
         }
@@ -451,14 +492,28 @@ pub(crate) fn parse_fill(r: &mut ByteReader) -> Fill {
     }
     if fill_type_val & 0x04 != 0 {
         let a = r.read_u8().unwrap_or(0);
-        if fill.alpha == 0 { fill.alpha = a; }
+        if fill.alpha == 0 {
+            fill.alpha = a;
+        }
     }
     if fill_type_val & 0x02 != 0 {
         let a = r.read_u8().unwrap_or(0);
-        if fill.alpha == 0 { fill.alpha = a; }
+        if fill.alpha == 0 {
+            fill.alpha = a;
+        }
     }
 
     fill
+}
+
+/// 취소선 모양 id(bit 26-29)가 표 27 선 종류 13종에 해당하는지 판정한다.
+///
+/// 한컴은 취소선이 없는 문자에도 취소선 비트(bit 18-20)에 1을 넣으므로 비트만으로는
+/// 판정할 수 없고, 취소선이 없으면 모양 id에 선 종류가 아닌 placeholder(15 등)가
+/// 들어온다. HWPX의 `shape="3D"`와 같은 역할이다 (`hwpx::header::is_real_strike_shape`).
+/// 알 수 없는 값은 fail-closed로 no-strike 처리한다.
+fn is_real_strike_shape_id(shape: u8) -> bool {
+    shape <= 12
 }
 
 fn parse_char_shape(data: &[u8]) -> Result<CharShape, DocInfoError> {
@@ -542,21 +597,19 @@ fn parse_char_shape(data: &[u8]) -> Result<CharShape, DocInfoError> {
     // HWP 스펙 표 37: bit 15 = 위첨자, bit 16 = 아래첨자 (개별 플래그)
     let superscript = (attr & (1 << 15)) != 0;
     let subscript = (attr & (1 << 16)) != 0;
-    // 취소선 종류 (bit 18-20)
-    // 0 = 없음 (이론상)
-    // 1 = 없음 (실제로 많은 문서에서 기본값으로 사용됨)
-    // 2 이상 = 취소선 있음
-    let strikethrough_bits = (attr >> 18) & 0x07;
-    let strikethrough = strikethrough_bits > 1;
-
     // 밑줄 모양 (bit 4-7, 표 27 선 종류)
     let underline_shape = ((attr >> 4) & 0x0F) as u8;
     // 강조점 종류 (bit 21-24)
     let emphasis_dot = ((attr >> 21) & 0x0F) as u8;
     // 취소선 모양 (bit 26-29, 표 27 선 종류)
     let strike_shape = ((attr >> 26) & 0x0F) as u8;
+    // 취소선 여부 (bit 18-20). 비트만으로는 판정할 수 없어 모양 id를 함께 본다
+    // (is_real_strike_shape_id 참고).
+    let strikethrough = (attr >> 18) & 0x07 != 0 && is_real_strike_shape_id(strike_shape);
     // 커닝 여부 (bit 30)
     let kerning = (attr & (1 << 30)) != 0;
+    // 글꼴에 어울리는 빈칸 사용 여부 (bit 25)
+    let use_font_space = (attr & (1 << 25)) != 0;
 
     Ok(CharShape {
         raw_data: None,
@@ -589,6 +642,7 @@ fn parse_char_shape(data: &[u8]) -> Result<CharShape, DocInfoError> {
         underline_shape,
         strike_shape,
         kerning,
+        use_font_space,
     })
 }
 
@@ -708,6 +762,9 @@ fn parse_para_shape(data: &[u8]) -> Result<ParaShape, DocInfoError> {
         line_spacing_v2,
         head_type,
         para_level,
+        // HWP5 는 breakLatinWord 를 attr1 비트로 갖지만 HWPX 원문 보존 필드는 미사용
+        // (None → 직렬화 KEEP_WORD 기본, 기존 동작 유지). (#1986)
+        break_latin_word: None,
     })
 }
 
@@ -768,7 +825,7 @@ fn parse_bullet(data: &[u8]) -> Result<Bullet, DocInfoError> {
     let attr = r.read_u32().unwrap_or(0);
     let width_adjust = r.read_i16().unwrap_or(0);
     let text_distance = r.read_i16().unwrap_or(0);
-    let _char_shape_id = r.read_u32().unwrap_or(0);
+    let char_shape_id = r.read_u32().unwrap_or(0);
 
     // 글머리표 문자 (WCHAR, 2바이트)
     let bullet_char_u16 = r.read_u16().unwrap_or(0x2022); // 기본: ●(U+2022)
@@ -792,6 +849,7 @@ fn parse_bullet(data: &[u8]) -> Result<Bullet, DocInfoError> {
         attr,
         width_adjust,
         text_distance,
+        char_shape_id,
         bullet_char,
         image_bullet,
         image_data,
@@ -811,8 +869,12 @@ fn parse_style(data: &[u8]) -> Result<Style, DocInfoError> {
 
     let style_type = r.read_u8().unwrap_or(0);
     let next_style_id = r.read_u8().unwrap_or(0);
+    // [Task #1058 후속] HWP5 spec 표 47 정합 — lang_id (INT16, default 1042=한국어)
+    let lang_id = r.read_i16().unwrap_or(1042);
     let para_shape_id = r.read_u16().unwrap_or(0);
     let char_shape_id = r.read_u16().unwrap_or(0);
+    // [Task #1058 후속] 끝 UINT16 (스펙 미문서화) — 한컴 정답지 STYLE 의 마지막 2 byte zero 흡수.
+    let _trailing = r.read_u16().unwrap_or(0);
 
     Ok(Style {
         raw_data: None,
@@ -820,6 +882,7 @@ fn parse_style(data: &[u8]) -> Result<Style, DocInfoError> {
         english_name,
         style_type,
         next_style_id,
+        lang_id,
         para_shape_id,
         char_shape_id,
     })
@@ -880,11 +943,27 @@ mod tests {
         let mut data = Vec::new();
         data.push(0x80); // attr: alt_name 있음
         data.extend(make_hwp_string("맑은 고딕"));
+        data.push(1); // alternate font type
         data.extend(make_hwp_string("Malgun Gothic"));
 
         let font = parse_face_name(&data).unwrap();
         assert_eq!(font.name, "맑은 고딕");
         assert_eq!(font.alt_name, Some("Malgun Gothic".to_string()));
+    }
+
+    #[test]
+    fn test_parse_face_name_with_type_info_and_default_name() {
+        let mut data = Vec::new();
+        data.push(0x61); // TTF + type_info + default font
+        data.extend(make_hwp_string("굴림"));
+        data.extend([2, 11, 6, 0, 0, 1, 1, 1, 1, 1]);
+        data.extend(make_hwp_string("Gulim"));
+
+        let font = parse_face_name(&data).unwrap();
+        assert_eq!(font.name, "굴림");
+        assert_eq!(font.alt_type, 1);
+        assert_eq!(font.type_info, Some([2, 11, 6, 0, 0, 1, 1, 1, 1, 1]));
+        assert_eq!(font.default_name, Some("Gulim".to_string()));
     }
 
     #[test]
@@ -942,7 +1021,7 @@ mod tests {
         }
         // base_size
         data.extend_from_slice(&1000i32.to_le_bytes()); // 10pt
-        // attr: bold | italic
+                                                        // attr: bold | italic
         data.extend_from_slice(&0x03u32.to_le_bytes());
         // shadow offsets
         data.push(0);
@@ -961,6 +1040,99 @@ mod tests {
     }
 
     #[test]
+    fn test_parse_char_shape_use_font_space() {
+        fn make_data(attr: u32) -> Vec<u8> {
+            let mut data = Vec::new();
+            for _ in 0..7 {
+                data.extend_from_slice(&0u16.to_le_bytes());
+            }
+            for _ in 0..7 {
+                data.push(100);
+            }
+            for _ in 0..7 {
+                data.push(0i8 as u8);
+            }
+            for _ in 0..7 {
+                data.push(100);
+            }
+            for _ in 0..7 {
+                data.push(0i8 as u8);
+            }
+            data.extend_from_slice(&1000i32.to_le_bytes());
+            data.extend_from_slice(&attr.to_le_bytes());
+            data.push(0); // shadow_offset_x
+            data.push(0); // shadow_offset_y
+            data.extend_from_slice(&0u32.to_le_bytes()); // text_color
+            data.extend_from_slice(&0u32.to_le_bytes()); // underline_color
+            data.extend_from_slice(&0x00FFFFFFu32.to_le_bytes()); // shade_color
+            data.extend_from_slice(&0x00B2B2B2u32.to_le_bytes()); // shadow_color
+            data
+        }
+
+        // bit 25 미설정 → use_font_space=false
+        let cs = parse_char_shape(&make_data(0)).unwrap();
+        assert!(!cs.use_font_space);
+
+        // bit 25 설정 → use_font_space=true
+        let cs = parse_char_shape(&make_data(1 << 25)).unwrap();
+        assert!(cs.use_font_space);
+
+        // bit 30 (kerning) 과 bit 25 동시 설정
+        let cs = parse_char_shape(&make_data((1 << 30) | (1 << 25))).unwrap();
+        assert!(cs.kerning);
+        assert!(cs.use_font_space);
+    }
+
+    #[test]
+    fn test_parse_char_shape_strikethrough() {
+        fn make_data(strike_bits: u32, strike_shape: u32) -> Vec<u8> {
+            let attr = (strike_bits << 18) | (strike_shape << 26);
+            let mut data = Vec::new();
+            for _ in 0..7 {
+                data.extend_from_slice(&0u16.to_le_bytes());
+            }
+            for _ in 0..7 {
+                data.push(100);
+            }
+            for _ in 0..7 {
+                data.push(0i8 as u8);
+            }
+            for _ in 0..7 {
+                data.push(100);
+            }
+            for _ in 0..7 {
+                data.push(0i8 as u8);
+            }
+            data.extend_from_slice(&1000i32.to_le_bytes());
+            data.extend_from_slice(&attr.to_le_bytes());
+            data.push(0); // shadow_offset_x
+            data.push(0); // shadow_offset_y
+            data.extend_from_slice(&0u32.to_le_bytes()); // text_color
+            data.extend_from_slice(&0u32.to_le_bytes()); // underline_color
+            data.extend_from_slice(&0x00FFFFFFu32.to_le_bytes()); // shade_color
+            data.extend_from_slice(&0x00B2B2B2u32.to_le_bytes()); // shadow_color
+            data
+        }
+
+        // 취소선 없는 평범한 본문
+        assert!(!parse_char_shape(&make_data(0, 0)).unwrap().strikethrough);
+
+        // 한컴이 취소선 없는 문자에 넣는 기본값: 비트는 1, 모양은 placeholder
+        assert!(!parse_char_shape(&make_data(1, 15)).unwrap().strikethrough);
+        assert!(!parse_char_shape(&make_data(1, 13)).unwrap().strikethrough);
+
+        // 실제 취소선 — 비트가 1이어도 모양이 선 종류면 취소선이다
+        let cs = parse_char_shape(&make_data(1, 0)).unwrap();
+        assert!(cs.strikethrough);
+        assert_eq!(cs.strike_shape, 0);
+        assert!(parse_char_shape(&make_data(1, 12)).unwrap().strikethrough);
+        assert!(parse_char_shape(&make_data(3, 1)).unwrap().strikethrough);
+
+        // 비트가 0이면 모양과 무관하게 취소선이 아니다
+        assert!(!parse_char_shape(&make_data(0, 1)).unwrap().strikethrough);
+    }
+
+    #[test]
     fn test_parse_para_shape_basic() {
         let mut data = Vec::new();
         // attr1: Justify (0) + Percent spacing (0)
@@ -974,7 +1146,7 @@ mod tests {
         data.extend_from_slice(&0u16.to_le_bytes()); // tab_def_id
         data.extend_from_slice(&0u16.to_le_bytes()); // numbering_id
         data.extend_from_slice(&0u16.to_le_bytes()); // border_fill_id
-        // border_spacing (4 × i16)
+                                                     // border_spacing (4 × i16)
         for _ in 0..4 {
             data.extend_from_slice(&0i16.to_le_bytes());
         }
@@ -996,7 +1168,11 @@ mod tests {
         for _ in 0..6 {
             props_data.extend_from_slice(&1u16.to_le_bytes());
         }
-        doc_info_data.extend(make_record(tags::HWPTAG_DOCUMENT_PROPERTIES, 0, &props_data));
+        doc_info_data.extend(make_record(
+            tags::HWPTAG_DOCUMENT_PROPERTIES,
+            0,
+            &props_data,
+        ));
 
         // ID_MAPPINGS (모두 0)
         let id_data = vec![0u8; 60]; // 15 × u32
@@ -1015,7 +1191,11 @@ mod tests {
 
         // DOCUMENT_PROPERTIES
         let props_data = vec![0u8; 14];
-        doc_info_data.extend(make_record(tags::HWPTAG_DOCUMENT_PROPERTIES, 0, &props_data));
+        doc_info_data.extend(make_record(
+            tags::HWPTAG_DOCUMENT_PROPERTIES,
+            0,
+            &props_data,
+        ));
 
         // ID_MAPPINGS: 한글 폰트 1개
         let mut id_data = vec![0u8; 60];
@@ -1043,8 +1223,8 @@ mod tests {
         data.extend_from_slice(&0x0000u16.to_le_bytes());
         // 4방향 테두리 (각: 종류 u8 + 굵기 u8 + 색상 COLORREF)
         for _ in 0..4 {
-            data.push(1);  // 종류: Solid (HWP 스펙: 1=실선)
-            data.push(3);  // 굵기: 인덱스 3 (0.2mm)
+            data.push(1); // 종류: Solid (HWP 스펙: 1=실선)
+            data.push(3); // 굵기: 인덱스 3 (0.2mm)
             data.extend_from_slice(&0x00000000u32.to_le_bytes()); // 색상: 검정
         }
         // 대각선: type=0, width=0, color=0
@@ -1056,9 +1236,18 @@ mod tests {
 
         let bf = parse_border_fill(&data).unwrap();
         for i in 0..4 {
-            assert_eq!(bf.borders[i].line_type, BorderLineType::Solid, "border[{}] should be Solid", i);
+            assert_eq!(
+                bf.borders[i].line_type,
+                BorderLineType::Solid,
+                "border[{}] should be Solid",
+                i
+            );
             assert_eq!(bf.borders[i].width, 3, "border[{}] width should be 3", i);
-            assert_eq!(bf.borders[i].color, 0, "border[{}] color should be black", i);
+            assert_eq!(
+                bf.borders[i].color, 0,
+                "border[{}] color should be black",
+                i
+            );
         }
     }
 
@@ -1068,17 +1257,23 @@ mod tests {
         let mut data = Vec::new();
         data.extend_from_slice(&0x0000u16.to_le_bytes());
         for _ in 0..4 {
-            data.push(0);  // 종류: None (0)
-            data.push(1);  // 굵기: 인덱스 1
+            data.push(0); // 종류: None (0)
+            data.push(1); // 굵기: 인덱스 1
             data.extend_from_slice(&0x00000000u32.to_le_bytes());
         }
-        data.push(0); data.push(0);
+        data.push(0);
+        data.push(0);
         data.extend_from_slice(&0x00000000u32.to_le_bytes());
         data.extend_from_slice(&0x00000000u32.to_le_bytes());
 
         let bf = parse_border_fill(&data).unwrap();
         for i in 0..4 {
-            assert_eq!(bf.borders[i].line_type, BorderLineType::None, "border[{}] should be None", i);
+            assert_eq!(
+                bf.borders[i].line_type,
+                BorderLineType::None,
+                "border[{}] should be None",
+                i
+            );
         }
     }
 
@@ -1091,16 +1286,20 @@ mod tests {
         // attr (u16)
         data.extend_from_slice(&0x0000u16.to_le_bytes());
         // 좌: Solid(1), 굵기 0, 빨강
-        data.push(1); data.push(0);
+        data.push(1);
+        data.push(0);
         data.extend_from_slice(&0x000000FFu32.to_le_bytes());
         // 우: Dash(2), 굵기 4, 초록
-        data.push(2); data.push(4);
+        data.push(2);
+        data.push(4);
         data.extend_from_slice(&0x0000FF00u32.to_le_bytes());
         // 상: Dot(3), 굵기 7, 파랑
-        data.push(3); data.push(7);
+        data.push(3);
+        data.push(7);
         data.extend_from_slice(&0x00FF0000u32.to_le_bytes());
         // 하: Double(8), 굵기 10, 검정
-        data.push(8); data.push(10);
+        data.push(8);
+        data.push(10);
         data.extend_from_slice(&0x00000000u32.to_le_bytes());
         // 대각선
         data.push(0);
@@ -1125,5 +1324,4 @@ mod tests {
         assert_eq!(bf.borders[2].color, 0x00FF0000); // 파랑
         assert_eq!(bf.borders[3].color, 0x00000000); // 검정
     }
-
 }

@@ -83,19 +83,122 @@ HWP 파일이 한컴과 다르게 렌더링되면 알려주세요:
 - PR을 생성하면 CI가 자동으로 빌드 + 테스트 + Clippy를 실행합니다
 - CI가 통과하지 않으면 merge할 수 없습니다
 - 메인테이너의 코드 리뷰 승인 후 merge됩니다
+- **하나의 PR에 여러 fix를 담을 때는 이슈별로 커밋을 분리**해주세요. 여러 수정이 한 커밋에
+  섞이면 회귀 추적·선별 반영·리뷰가 어려워져 머지가 지연됩니다.
 
 ### PR 전 체크리스트
 
 ```bash
-cargo test                       # 783+ 테스트 통과
-cargo clippy -- -D warnings      # 린트 경고 0건
+cargo fmt --all -- --check                   # 포맷 정책 준수
+cargo test --profile release-test --tests    # 통합 테스트 포함 전체 (5,500+)
+cargo clippy -- -D warnings                  # 린트 경고 0건
 ```
 
-두 명령이 모두 통과하는지 확인한 후 PR을 생성해주세요.
+세 명령이 모두 통과하는지 확인한 후 PR을 생성해주세요.
+
+- `release-test` 프로필은 CI와 같은 기준이며 debug 대비 수 배 빠릅니다.
+- `cargo test --lib` 만으로는 통합 테스트 회귀를 잡지 못합니다 — `--tests` 를 포함해주세요.
+
+### 회귀 테스트 가이드
+
+버그 수정 PR 에서 리뷰가 가장 먼저 확인하는 항목입니다. 아래 관례를 따르면 검토와 merge 가
+크게 빨라집니다.
+
+1. **red→green 회귀 테스트 동봉** — 수정 전 결함을 재현·고정하는 테스트를 함께 제출합니다.
+   파일명 관례: `tests/issue_{이슈번호}_{짧은_설명}.rs`. 수정을 되돌리면 실패하고, 수정을
+   적용하면 통과해야 합니다.
+2. **수정 전 실패 증명 (권장)** — "수정 커밋만 원복한 상태에서 신규 테스트가 실제로 FAIL"
+   함을 PR 본문에 기록해주세요. 테스트가 결함을 판별한다는 증명이 되어 리뷰 신뢰도가
+   높아집니다.
+3. **기존 기대값(잠정 핀) 변경 시** — 페이지 수 등 잠정 핀 수치를 바꾸는 PR 은 다음을
+   지켜주세요. 임의 갱신은 받지 않습니다.
+   - 정답지 방향 근거 명시 (예: "PDF 정답 315 방향 +3, 잔여 −3")
+   - 테스트 주석에 갱신 이력을 누적 (어떤 이슈의 어떤 정정으로 값이 왜 변했는지 —
+     `tests/issue_2070_rowbreak_density.rs` 의 3단 이력 주석이 모범 사례)
+   - "핀 미만/초과 시 의심 지점" 안내 메시지 유지
+4. **인접 핀 무회귀 확인** — 수정 영역 주변의 알려진 핀 테스트(예: 페이지네이션이면
+   byeolpyo 계열)가 유지되는지 `--no-fail-fast` 로 전체 실행하여 확인해주세요.
+
+### 포맷 정책
+
+rhwp는 저장소 루트의 `rust-toolchain.toml`과 `rustfmt.toml`을 기준으로 Rust 포맷을 관리합니다.
+
+```bash
+cargo fmt --all                  # 로컬 포맷 적용
+cargo fmt --all -- --check       # CI와 같은 포맷 검증
+```
+
+기여 시 다음 원칙을 지켜주세요.
+
+- 기능 변경과 전체 포맷 정규화는 같은 커밋에 섞지 않습니다.
+- PR에서 본인이 수정한 파일 외 대량 포맷 diff가 생기면, 먼저 `devel` 기준으로 rebase한 뒤 다시 확인합니다.
+- 저장소 전체 `cargo fmt --all`은 포맷 전용 이슈/브랜치에서만 수행합니다.
+- rustfmt 옵션이나 Rust toolchain 버전을 바꾸는 작업은 별도 이슈로 분리합니다.
+
+### 한컴 PDF 와의 일치 검증에 대해
+
+> ⚠️ **한컴 PDF 출력은 정답지가 아닙니다.**
+>
+> 동일 HWP 파일도 한컴 환경 (버전 / 폰트 설치 / OS / 출력 방법) 에 따라 PDF 결과가 다릅니다. 페이지 분할까지 환경별로 달라지는 사례가 발견되었습니다 (PR #360 정황). 따라서 **"한컴 PDF 와 일치"** 만을 PR 검증 기준으로 제출하셔도 머지가 보장되지 않습니다.
+
+신뢰할 수 있는 검증 기준 (우선순위):
+
+1. **결정적 자동 검증** (필수):
+   - `cargo test --profile release-test --tests` (통합 테스트 포함, 회귀 0)
+   - `cargo test --test svg_snapshot` (rhwp 자체 일관성)
+   - `cargo clippy -- -D warnings`
+
+2. **시각 검증** (참고):
+   - 한컴 PDF / 한컴 화면 캡처 + rhwp SVG 비교 — **본인 환경 명시 필수** (한컴 버전, OS, 폰트 등)
+   - 페이지 분할 영향 PR 의 경우 메인테이너 환경 재검증 후 머지 결정
+
+3. **다른 렌더링 결과** (참고):
+   - HTML / Canvas / VS Code 확장 등 다른 출력 경로와의 일관성
+
+### 페이지 분할 / 페이지네이션 영향 PR 의 경우
+
+페이지 분할은 한컴 환경 의존성이 가장 큰 영역입니다. 이 영역의 PR 은 다음 절차 권장:
+
+1. PR 본문에 검증 환경 명시 (한컴 버전, OS, 폰트, 출력 방법)
+2. 메인테이너 환경 재검증 후 머지 결정 (작업지시자가 직접 확인)
+3. 회귀 테스트 동봉 — 위 "회귀 테스트 가이드" 절의 관례를 따라주세요
+
+### 렌더링 PR 자가 검증 도구 (한컴 없이 가능)
+
+렌더링·레이아웃을 수정하는 PR 은 제출 전 아래 도구로 자가 검증하면 리뷰 왕복이 크게
+줄어듭니다. 모두 **한컴 설치 없이** (macOS/Linux 포함) 실행할 수 있습니다.
+
+```bash
+# 개체(표·그림) geometry 무회귀 — 수정 전 baseline 저장, 수정 후 비교
+python tools/object_visual_regression.py <샘플.hwp> -o out/ovr --no-hwp --save-baseline
+#   (수정 적용 후)
+python tools/object_visual_regression.py <샘플.hwp> -o out/ovr2 --no-hwp --baseline out/ovr/baseline.json
+
+# 라운드트립 시각 기하 회귀
+cargo run --release --bin rhwp -- render-diff <샘플.hwp>
+
+# HWPX→HWP 변환 페이지네이션 정합
+python tools/roundtrip_fidelity_harness.py --files <샘플.hwpx> --workdir out/rtf -o out/rtf/result.tsv
+```
+
+- OVR(개체 시각 회귀)로 "변경 범위 밖 문서의 개체가 움직이지 않았음"을 결과와 함께
+  PR 본문에 적어주시면 리뷰가 빨라집니다.
+- 어떤 PR 에 어떤 시각 증거가 필요한지는
+  [시각 검증 거버넌스](mydocs/manual/verification/visual_verification_governance.md)를 참고하세요 —
+  시각 검증은 전수 절차가 아니라 **PR 의 수정 목적과 사용자에게 보이는 동작 기준으로 선택**합니다.
+- 전체 CLI 도구는 [cli_commands.md](mydocs/manual/cli_commands.md) 참조.
+- 자가 검증 통과는 회귀 없음의 증명이며, 한컴 정합의 최종 판정은 메인테이너 환경에서
+  이루어집니다.
 
 ### HWP 샘플 파일 제공
 
 다양한 HWP 파일로 테스트할수록 렌더링 품질이 올라갑니다. 개인정보가 없는 공공 문서나 테스트용 파일을 제공해주시면 큰 도움이 됩니다.
+
+- **스크린샷·비교 이미지는 저장소에 커밋하지 말고 PR 본문에 첨부**해주세요 (필요 시
+  메인테이너가 판정 자료를 `mydocs/pr/assets/` 에 반영합니다).
+- **한컴 편집기 PDF 를 오라클로 제공하실 때**: `pdf/{원본 stem}-{한컴버전}.pdf` 명명
+  (예: `pdf/issue1835_tac_stale_height-2022.pdf`), PR 본문에 생성 환경(한컴 버전)을
+  명시해주세요. 재현 fixture 는 가능하면 1~2페이지로 축소해 `samples/` 에 포함합니다.
 
 ## 브랜치 규칙
 
@@ -149,6 +252,84 @@ rhwp-studio/        ← 웹 에디터 (TypeScript + Vite)
 - `cargo clippy -- -D warnings` 경고 0건 (CI에서 강제)
 - `unwrap()` 최소화
 - 모든 문서는 한국어로 작성
+
+## 문서 작성 규칙
+
+rhwp는 코드뿐 아니라 **작업 과정의 기록**도 프로젝트의 일부입니다(Hyper-Waterfall 방법론). PR에 문서를 포함하시는 경우 아래 규칙을 지켜주세요.
+
+> **문서 거버넌스**: 절차의 권위는 canonical 문서에 단일 기록됩니다 — 진입점은
+> [`mydocs/README.md`](mydocs/README.md)(문서 지도·manifest)이고, 이 문서의 표는 요약입니다.
+> 충돌 시 canonical 문서가 우선합니다.
+>
+> **AI 도구를 쓰신다면**: 저장소 루트의 [`AGENTS.md`](AGENTS.md)가 에이전트 부트스트랩
+> 파일입니다 (CLAUDE.md는 이를 가리키는 부트로더). 에이전트가 AGENTS.md 의 로딩 순서를
+> 따르면 이 저장소의 절차와 검증 규칙을 그대로 파악합니다.
+
+### 폴더 구조 (`mydocs/` 하위)
+
+> 폴더 역할의 canonical 은 [`docs_and_git_workflow.md`](mydocs/manual/codex/docs_and_git_workflow.md) 의 Folder Roles 입니다. 아래 표는 기여자 관점 요약입니다.
+
+| 폴더 | 용도 |
+|------|------|
+| `orders/` | 일일 작업지시 (`yyyymmdd.md`만 허용) |
+| `plans/` | 수행 계획서, 구현 계획서 |
+| `working/` | 단계별 완료 보고서 (`_stage{N}.md`) |
+| `report/` | 최종 결과보고서 (`_report.md`) **— 최종 보고서는 반드시 여기** |
+| `feedback/` | 피드백, 코드 리뷰 의견 |
+| `tech/` | 기술 조사·분석 (스펙 정오표, 라이브러리 발견 등) |
+| `manual/` | 사용자/개발자 매뉴얼 |
+| `troubleshootings/` | 트러블슈팅 (재발 방지용 해결 기록) |
+| `pr/` | **외부 기여자 PR 검토 기록** (메인테이너가 관리, 기여자는 작성 불필요) |
+
+### 문서 메타데이터 (front matter)
+
+`mydocs/manual/`, `mydocs/tech/`, `mydocs/troubleshootings/` 에 문서를 추가·수정할 때는
+**front matter 4필드가 필수**입니다:
+
+```markdown
+---
+kind: investigation        # canonical | guide | reference | investigation | decision | snapshot | memory
+status: active             # active | historical | superseded
+canonical: mydocs/manual/codex/docs_and_git_workflow.md   # 이 문서가 따르는 권위 문서 경로
+last_verified: 2026-07-17  # 역할·canonical 관계를 마지막으로 확인한 날짜
+---
+```
+
+로컬 검사 (CI 미실행 — 필요 시 실행):
+
+```bash
+python3 scripts/check_document_metadata.py   # front matter 4필드 검사
+python3 scripts/check_markdown_links.py      # 상대 링크 검사
+```
+
+`plans/`, `working/`, `report/`, `orders/` 의 타스크 문서에는 front matter가 필요 없습니다.
+
+### 파일명 규칙
+
+타스크 관련 문서는 다음 형식을 따릅니다:
+
+- 수행 계획서: `task_{milestone}_{이슈번호}.md` (예: `task_m100_235.md`)
+- 구현 계획서: `task_{milestone}_{이슈번호}_impl.md`
+- 단계별 보고서: `task_{milestone}_{이슈번호}_stage{N}.md` (`working/`)
+- 최종 보고서: `task_{milestone}_{이슈번호}_report.md` (`report/`)
+
+**주의 사항:**
+
+- `task_` 접두어 고정 (`task_bug_`, `task_feat_` 등은 사용하지 않음)
+- 마일스톤은 `m{숫자}` 형식 (예: `m100`). 생략·약식 금지
+- 후속 수정: `_v2`, `_v3` 버전 접미어 사용 (`_fix`, `_hotfix` 금지)
+- `orders/` 에는 `yyyymmdd.md` 외의 파일을 두지 않습니다. 이슈 상세 조사는 `troubleshootings/` 또는 `tech/` 로
+- 최종 보고서(`_report.md`)는 반드시 `report/` 폴더에 위치 (`working/` 아님)
+
+### 기여자가 작성해야 하는 문서 범위
+
+기여자는 본인 작업 범위(내부 타스크 문서: `plans/`, `working/`, `report/`, `tech/`, `troubleshootings/` 등)만 작성합니다.
+
+**`pr/` 폴더는 메인테이너가 PR을 검토한 기록을 남기는 전용 공간**이므로, 기여자는 직접 작성할 필요가 없습니다. 메인테이너가 PR을 리뷰하면서 `pr_{번호}_review.md`, `pr_{번호}_report.md` 등을 자동으로 생성합니다. 이 파일들은 나중에 **PR 처리 이력으로 공개**되므로, 본인 PR이 어떻게 검토되었는지 추적 가능합니다.
+
+### 이 규칙이 애매하다면
+
+애매한 상황이 있다면 PR 코멘트로 질문해주세요. 메인테이너가 안내드리고, 필요하면 이 문서를 보완합니다. (이 규칙 자체가 PR 리뷰 과정에서 지속적으로 다듬어지고 있습니다.)
 
 ## HWP 단위 참고
 

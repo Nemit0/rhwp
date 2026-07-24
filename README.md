@@ -15,8 +15,14 @@
   <a href="https://www.npmjs.com/package/@rhwp/core"><img src="https://img.shields.io/npm/v/@rhwp/core?label=npm" alt="npm" /></a>
   <a href="https://marketplace.visualstudio.com/items?itemName=edwardkim.rhwp-vscode"><img src="https://img.shields.io/badge/VS%20Code-Marketplace-007ACC" alt="VS Code" /></a>
   <a href="https://opensource.org/licenses/MIT"><img src="https://img.shields.io/badge/License-MIT-yellow.svg" alt="License: MIT" /></a>
-  <a href="https://www.rust-lang.org/"><img src="https://img.shields.io/badge/Rust-1.75%2B-orange.svg" alt="Rust" /></a>
+  <a href="https://www.rust-lang.org/"><img src="https://img.shields.io/badge/Rust-1.93.1-orange.svg" alt="Rust" /></a>
   <a href="https://webassembly.org/"><img src="https://img.shields.io/badge/WebAssembly-Ready-blue.svg" alt="WASM" /></a>
+</p>
+
+<p align="center">
+  <a href="https://chromewebstore.google.com/detail/pgakpjflombjmehnebnbpnalhegaanag"><img src="https://img.shields.io/chrome-web-store/v/pgakpjflombjmehnebnbpnalhegaanag?label=Chrome%20Web%20Store&logo=googlechrome&logoColor=white" alt="Chrome Web Store" /></a>
+  <a href="https://microsoftedge.microsoft.com/addons/detail/rhwp/nfkdfobhmanddlhdbclkpoanbccpigcn"><img src="https://img.shields.io/badge/Edge%20Add--ons-Store-0078D7" alt="Edge Add-ons" /></a>
+  <a href="https://addons.mozilla.org/firefox/addon/rhwp-free-hwp-editor/"><img src="https://img.shields.io/amo/v/rhwp-free-hwp-editor?label=Firefox%20Add-ons&logo=firefoxbrowser&logoColor=white" alt="Firefox Add-ons" /></a>
 </p>
 
 <p align="center">
@@ -25,7 +31,7 @@
 
 ---
 
-HWP 파일을 **어디서든** 열어보세요. 무료, 설치 없이.
+HWP/HWPX 파일과 지원되는 HML 문서를 **어디서든** 열어보세요. 무료, 설치 없이.
 
 rhwp는 Rust + WebAssembly 기반의 오픈소스 HWP/HWPX 뷰어/에디터입니다. 닫힌 포맷의 벽을 깨고, 모든 사람, 모든 AI, 모든 플랫폼에서 한글 문서를 자유롭게 읽고 쓸 수 있게 합니다.
 
@@ -54,47 +60,31 @@ rhwp는 Rust + WebAssembly 기반의 오픈소스 HWP/HWPX 뷰어/에디터입�
 
 ## 이정표
 
-### v0.5.0 — 뼈대 (현재)
+### v0.5.0 ~ v0.7.x — 뼈대 (현재)
 
 > 역공학 완성, 읽기/쓰기 기반 구축
 
 - HWP 5.0 / HWPX 파서, 문단·표·수식·이미지·차트 렌더링
+- HML(HWPML 2.9/2.91) 가져오기: 본문·서식·표·사각형 글상자·지원 수식, loss-safe HML/HWP/HWPX 저장
 - 페이지네이션 (다단 분할, 표 행 분할), 머리말/꼬리말/바탕쪽/각주
-- SVG 내보내기 (CLI) + Canvas 렌더링 (WASM/Web)
+- SVG/PNG/PDF 내보내기 (CLI) + Canvas/CanvasKit 렌더링 (WASM/Web)
 - 웹 에디터 + hwpctl 호환 API (30 Actions, Field API)
-- 783+ 테스트
+- 5,500+ Rust 테스트 + studio 단위/e2e/시각 회귀 CI
 
-### v1.0.0 — 조판 엔진
+> HML은 실제 corpus로 확인된 HWPML 2.9/2.91 구조만 제한 지원합니다. 지원 범위의 수식은
+> 가져와 편집할 수 있고, 보존 불가 요소가 없는 HML 원본은 preflight 검사 후 HML로 다시
+> 저장할 수 있습니다. 그림·내장/외부 리소스 등 미지원 요소는 경고하고 손실 저장을 차단합니다.
 
-> AI 조판 파이프라인, 뼈대 완성
+#### 릴리즈 이력
 
-- 편집 시 동적 재조판 체계화 (LINE_SEG 재계산 + 페이지네이션 연동)
-- AI 기반 문서 생성/편집 파이프라인
-- 문서 조판 품질 한컴 뷰어 수준 도달
-
-### v2.0.0 — 협업
-
-> 커뮤니티가 기능을 채워가는 단계, 살 붙이기
-
-- 플러그인/확장 아키텍처, 실시간 협업 편집
-- 다양한 출력 포맷 (PDF, DOCX 등)
-
-### v3.0.0 — 완성
-
-> 한컴과 대등한 수준, 완전한 공공 자산
-
-- 전체 HWP 기능 커버리지, 접근성(a11y), 모바일 대응
-- 공공기관 실무 투입 가능 수준
-
-자세한 내용은 [로드맵 문서](mydocs/report/rhwp-milestone.md)를 참조하세요.
-
----
+사이클별 상세 변경 사항(기여자 목록 포함)은 [CHANGELOG.md](CHANGELOG.md)에 기록합니다.
 
 ## Features
 
 ### Parsing (파싱)
 - HWP 5.0 binary format (OLE2 Compound File)
 - HWPX (Open XML-based format)
+- HML (HWPML 2.9/2.91) — 검증된 구조 제한 지원
 - Sections, paragraphs, tables, textboxes, images, equations, charts
 - Header/footer, master pages, footnotes/endnotes
 
@@ -123,9 +113,17 @@ rhwp는 Rust + WebAssembly 기반의 오픈소스 HWP/HWPX 뷰어/에디터입�
 - vpos-based paragraph position correction
 
 ### Output (출력)
-- SVG export (CLI)
-- Canvas rendering (WASM/Web)
+- SVG export (CLI, legacy + layer replay)
+- PNG export (native Skia, `--features native-skia`) / PDF export (`--text-as-paths` 지원, 바이트 재현성)
+- Canvas rendering (WASM/Web) + CanvasKit direct replay (opt-in)
+- 저장: HWP 편집 저장, HWPX/HML 의미 보존 저장, HWPX → HWP 변환 경로
 - Debug overlay (paragraph/table boundaries + indices + y-coordinates)
+
+### Multi-Renderer Backends (멀티 렌더러 백엔드)
+- 공통 paint IR: `PageRenderTree` → `PageLayerTree` (Rust `DocumentCore::build_page_layer_tree`, WASM `getPageLayerTree`) — `schemaVersion: 1`, 호환 변경은 additive 원칙
+- 백엔드: legacy/layered SVG, Canvas2D(브라우저 기본), CanvasKit 직접 replay(`?renderer=canvaskit` opt-in + readiness gate), native Skia PNG/PDF(`--features native-skia`)
+- Text IR v2: 폰트 blob 증명 기반 GlyphRun/GlyphOutline 사이드카 — 미증명 케이스는 항상 `TextRun` 폴백 (호환 계약)
+- 시각 회귀 CI: render-diff(Canvas 계열 + report-only PDF diff), 4-backend 공통 replay-plane(배경→글뒤→본문→글앞) 계약
 
 ### Web Editor (웹 에디터)
 - Text editing (insert, delete, undo/redo)
@@ -191,7 +189,7 @@ document.getElementById('viewer').innerHTML = doc.renderPageSvg(0);
 처음 프로젝트에 참여하는 개발자는 [온보딩 가이드](mydocs/manual/onboarding_guide.md)를 먼저 읽어보세요. 프로젝트 아키텍처, 디버깅 도구, 개발 워크플로우를 한눈에 파악할 수 있습니다.
 
 ### Requirements
-- Rust 1.75+
+- Rust 1.93.1 (`rust-toolchain.toml` 기준)
 - Docker (for WASM build)
 - Node.js 18+ (for web editor)
 
@@ -200,7 +198,7 @@ document.getElementById('viewer').innerHTML = doc.renderPageSvg(0);
 ```bash
 cargo build                    # Development build
 cargo build --release          # Release build
-cargo test                     # Run tests (755+ tests)
+cargo test                     # Run tests (5,500+ tests)
 ```
 
 ### WASM Build
@@ -235,6 +233,14 @@ rhwp export-svg sample.hwp -p 0                    # Export specific page (0-ind
 rhwp export-svg sample.hwp --debug-overlay         # Debug overlay (paragraph/table boundaries)
 ```
 
+### PNG / PDF Export
+
+```bash
+rhwp export-png sample.hwp -o out/                 # PNG (requires --features native-skia build)
+rhwp export-pdf sample.hwp -o out.pdf              # PDF (byte-reproducible)
+rhwp export-pdf sample.hwp --text-as-paths         # Text as vector paths (font-free)
+```
+
 ### Document Inspection
 
 ```bash
@@ -267,9 +273,14 @@ src/
 │   ├── layout/                # Layout (paragraph, table, shapes, cells)
 │   ├── pagination/            # Pagination engine
 │   ├── equation/              # Equation parser/layout/renderer
+│   ├── typeset.rs             # Typeset engine (main pagination)
 │   ├── svg.rs                 # SVG output
-│   └── web_canvas.rs          # Canvas output
-├── serializer/                # HWP file serializer (save)
+│   ├── web_canvas.rs          # Canvas output
+│   └── skia/                  # Native Skia PNG/PDF (--features native-skia)
+├── paint/                     # PageLayerTree paint IR + replay planes
+├── emf/                       # EMF parser + SVG converter
+├── ooxml_chart/               # OOXML chart parser + SVG renderer
+├── serializer/                # HWP/HWPX/HML serializer (save)
 └── wasm_api.rs                # WASM bindings
 
 rhwp-studio/                   # Web editor (TypeScript + Vite)
@@ -282,12 +293,19 @@ rhwp-studio/                   # Web editor (TypeScript + Vite)
 ├── e2e/                       # E2E tests (Puppeteer + Chrome CDP)
 │   └── helpers.mjs            # Test helpers (headless/host modes)
 
+npm/editor/                    # @rhwp/editor (iframe embed package)
+rhwp-chrome/ rhwp-firefox/     # Browser extensions (+ rhwp-safari, rhwp-vscode)
+rhwp-shared/                   # Shared frontend modules
+assets/fonts/                  # Canonical open-source font root
+
 mydocs/                        # Project documentation (Korean)
-├── orders/                    # Daily task tracking
-├── plans/                     # Task plans and implementation specs
+├── orders/                    # Daily task tracking (archives/: past months)
+├── plans/                     # Task plans (archives/: completed)
+├── working/ report/           # Stage reports / final reports
+├── pr/                        # External PR review records (archives/)
 ├── feedback/                  # Code review feedback
-├── tech/                      # Technical documents
-└── manual/                    # Manuals and guides
+├── tech/ manual/              # Technical docs / guides
+└── troubleshootings/          # Troubleshooting records
 
 scripts/                       # Build & quality tools
 ├── metrics.sh                 # Code quality metrics collection
@@ -308,11 +326,11 @@ scripts/                       # Build & quality tools
 |--|-----------|-----------|
 | **사람의 역할** | AI 출력 수락 | 지시, 검토, 결정 |
 | **계획** | 없음 — "그냥 만들어" | 계획서 작성 → 승인 → 실행 |
-| **품질 관문** | 동작하길 바람 | 783 테스트 + Clippy + CI + 코드 리뷰 |
+| **품질 관문** | 동작하길 바람 | 5,500+ 테스트 + Clippy + CI + 코드 리뷰 |
 | **디버깅** | AI에게 AI 버그 수정 요청 | 사람이 진단, AI가 구현 |
 | **아키텍처** | 우연히 형성 | 의도적 설계 (CQRS, 의존성 방향) |
-| **문서** | 없음 | 724개 파일의 프로세스 기록 |
-| **결과물** | 취약, 유지보수 어려움 | 프로덕션 수준, 100K+ 라인 |
+| **문서** | 없음 | 10,000+개 파일의 프로세스 기록 |
+| **결과물** | 취약, 유지보수 어려움 | 프로덕션 수준, 450K+ 라인 |
 
 AI는 배율기입니다. 하지만 배율기는 기존 프로세스를 증폭시킵니다. 프로세스 없음 × AI = 빠른 혼돈. 좋은 프로세스 × AI = 비범한 결과물.
 
@@ -330,7 +348,7 @@ AI는 배율기입니다. 하지만 배율기는 기존 프로세스를 증폭�
 품질 및 정확성 판단            ←    코드, 문서, 테스트 생성
 ```
 
-`mydocs/` 디렉토리(724개 파일, 영문 번역: `mydocs/eng/`)에 전체 개발 기록이 있습니다: 일일 작업 기록, 구현 계획서, 코드 리뷰 피드백, 기술 연구 문서, 트러블슈팅 기록.
+`mydocs/` 디렉토리(10,000+개 파일, 영문 번역: `mydocs/eng/`)에 전체 개발 기록이 있습니다: 일일 작업 기록, 구현 계획서, 코드 리뷰 피드백, 기술 연구 문서, 트러블슈팅 기록.
 
 > `mydocs/`는 코드에 대한 문서가 아닙니다 — **AI로 소프트웨어를 만드는 방법**에 대한 문서입니다. 오픈소스 방법론입니다.
 
@@ -340,14 +358,16 @@ AI는 배율기입니다. 하지만 배율기는 기존 프로세스를 증폭�
 
 ```
 local/task{N}  ──커밋──커밋──┐
-                              ├─→ devel merge (관련 타스크 묶어서)
-                              ├─→ main merge + 태그 (릴리즈 시점)
+                              ├─→ local/devel merge (작업 단위)
+                              ├─→ devel merge + push (검증 후)
+                              ├─→ main merge + 태그 (릴리즈 시점, PR 기반)
 ```
 
 | 브랜치 | 용도 |
 |--------|------|
-| `main` | 릴리즈 (태그: v0.5.0 등) |
-| `devel` | 개발 통합 |
+| `main` | 릴리즈 (태그: v0.7.19 등) |
+| `devel` | 개발 통합 (원격 push 대상) |
+| `local/devel` | devel 의 로컬 작업 브랜치 |
 | `local/task{N}` | GitHub Issue 번호 기반 타스크 브랜치 |
 
 ### 타스크 관리
@@ -423,7 +443,29 @@ graph TB
 
 ## Contributing
 
-See [CONTRIBUTING.md](CONTRIBUTING.md) for guidelines.
+기여 환영합니다. 다음 핵심 사항을 먼저 확인해 주세요:
+
+- **PR base 는 `devel`** 입니다 (`main` 아님). GitHub 기본 브랜치는 `main` 이지만 기여 PR 은 모두 `devel` 로 받습니다.
+- **이슈 먼저 확인**: 동일 영역에 진행 중인 작업이 있는지 [열린 이슈](https://github.com/edwardkim/rhwp/issues) 와 [열린 PR](https://github.com/edwardkim/rhwp/pulls) 을 먼저 확인해 주세요. 중복 작업을 방지합니다.
+- **이슈 close 는 메인테이너**: 작업 완료 후 PR 만 제출해 주세요. 이슈는 PR 머지 시 메인테이너가 close 합니다.
+- **한컴 PDF 는 정답지가 아닙니다**: 한컴 도구 (편집기 / Viewer / 한컴독스), 버전 (2010 / 2020 / 2022), 출력 경로 (한컴 자체 / OS 인쇄) 별로 PDF 결과가 다릅니다. 자세한 내용과 환경별 비교 자료는 [한컴 PDF 환경 의존성 위키](https://github.com/edwardkim/rhwp/wiki/한컴-PDF-환경-의존성) 를 참고하세요.
+
+상세한 기여 절차 (Fork → 브랜치 → 커밋 → PR) 는 [CONTRIBUTING.md](CONTRIBUTING.md) 를 참고하세요.
+
+### 위키 자료 (Wiki)
+
+기여자와 fork 사용자에게 도움이 되는 권위 자료를 [Wiki](https://github.com/edwardkim/rhwp/wiki) 에 정리하고 있습니다:
+
+- [한컴 PDF 환경 의존성](https://github.com/edwardkim/rhwp/wiki/한컴-PDF-환경-의존성) — 한컴 도구 / 버전 / OS 별 PDF 차이 정황 및 PR 검증 시 참고 사항
+- [HWP 5.0 Spec Errata](https://github.com/edwardkim/rhwp/wiki/HWP-5.0-Spec-Errata) — HWP 5.0 스펙 정오표
+- [HWP LINE_SEG vpos 이해](https://github.com/edwardkim/rhwp/wiki/HWP-LINE_SEG-vpos-이해) — 줄 분할 vpos 이해
+- [HWP Tab Leader Rendering](https://github.com/edwardkim/rhwp/wiki/HWP-Tab-Leader-Rendering) — Tab leader 렌더링
+- [Export API 사용 가이드](https://github.com/edwardkim/rhwp/wiki/Export-API-사용-가이드) — exportHwp / exportHwpx API
+- [HWPX2HWP Probe 추적 온보딩](https://github.com/edwardkim/rhwp/wiki/HWPX2HWP-Probe-%EC%B6%94%EC%A0%81-%EC%98%A8%EB%B3%B4%EB%94%A9) — HWPX→IR→HWP 저장 손상/한컴 호환성 probe 추적법
+- [Cloudflared 로 rhwp-studio 외부 HTTPS 접근](https://github.com/edwardkim/rhwp/wiki/Cloudflared-로-rhwp-studio-외부-HTTPS-접근)
+- [Hyper-Waterfall 문서 체계 가이드](https://github.com/edwardkim/rhwp/wiki/Hyper‐Waterfall-문서-체계-가이드)
+- [Investigation PR 가이드](https://github.com/edwardkim/rhwp/wiki/Investigation-PR-가이드)
+- [Legal FAQ](https://github.com/edwardkim/rhwp/wiki/Legal-FAQ)
 
 ## Notice
 

@@ -4,20 +4,25 @@
 
 use wasm_bindgen::prelude::*;
 
+pub mod diagnostics;
+pub mod document_core;
+pub mod emf;
+pub mod error;
 pub mod model;
+pub mod ole_chart;
+pub mod ooxml_chart;
+pub mod paint;
 pub mod parser;
 pub mod renderer;
 pub mod serializer;
-pub mod error;
-pub mod document_core;
 pub mod wasm_api;
 pub mod wmf;
 
-pub use parser::{DocumentParser, parse_document};
-pub use serializer::{DocumentSerializer, serialize_document};
 pub use document_core::DocumentCore;
 pub use error::HwpError;
 pub use model::event::DocumentEvent;
+pub use parser::{parse_document, DocumentParser};
+pub use serializer::{serialize_document, DocumentSerializer};
 
 /// WASM panic hook 초기화 (한 번만 실행)
 #[wasm_bindgen(start)]

@@ -1,3 +1,10 @@
+---
+kind: decision
+status: historical
+canonical: mydocs/manual/codex/docs_and_git_workflow.md
+last_verified: 2026-07-17
+---
+
 # Hyper-Waterfall: AI 시대의 소프트웨어 개발 방법론
 
 > AI가 없던 시대에는 불가능했던 방법론.
@@ -243,10 +250,10 @@ Hyper-Waterfall에서는 모든 결정, 모든 디버깅 과정, 모든 아키�
 ### 규모
 
 - **100,000+ 라인** Rust 코드
-- **783+ 테스트**, Clippy 경고 0건
-- **724개 문서** (한국어 + 영문)
-- **1인 개발** (+ Claude Code AI)
-- **약 2개월** 개발 기간
+- **941+ 테스트** (2026-04-23 기준), Clippy 경고 0건
+- **724+ 개 문서** (한국어 + 영문)
+- **1인 메인테이너 + Claude Code AI + 외부 기여자 9명** (v0.2.1 사이클 기준)
+- **약 2개월** 초기 개발 기간 (이후 커뮤니티 합류 단계)
 
 ### 일일 생산성
 
@@ -261,7 +268,7 @@ Hyper-Waterfall에서는 모든 결정, 모든 디버깅 과정, 모든 아키�
 - CONTRIBUTING.md 보완
 - GitHub Sponsors 활성화
 - Discussions 개설 (4개 글)
-- v0.6.0 릴리즈
+- v0.5.0 공개 릴리즈 (뼈대 완성 지점)
 - mydocs 영문 번역 724개 파일
 
 전통적인 방법론으로는 **2~3주** 걸릴 작업을 **하루**에 완료했다.

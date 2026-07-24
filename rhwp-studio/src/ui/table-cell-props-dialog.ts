@@ -1,7 +1,9 @@
 import { ModalDialog } from './dialog';
+import { appendSvgMarkup } from './dom-utils';
 import type { WasmBridge } from '@/core/wasm-bridge';
 import type { CellProperties, TableProperties } from '@/core/types';
 import type { EventBus } from '@/core/event-bus';
+import type { CommandServices } from '@/command/types';
 
 const HWPUNIT_PER_MM = 7200 / 25.4;
 
@@ -21,6 +23,10 @@ function hwp16ToMm(hu: number): number {
 function mmToHwp16(mm: number): number {
   return Math.round(mm * HWPUNIT_PER_MM);
 }
+
+const DOC_PAPER_COLOR = 'var(--doc-paper)';
+const PREVIEW_GUIDE_STROKE = 'var(--ui-border-light)';
+const LINE_SAMPLE_STROKE = 'currentColor';
 
 /** 탭 정의 */
 interface TabDef {
@@ -121,6 +127,8 @@ export class TableCellPropsDialog extends ModalDialog {
   // 현재 속성값 캐시
   private cellProps!: CellProperties;
   private tableProps!: TableProperties;
+  /** undo 기록 라우팅용 (없으면 wasm 직접 호출 fallback). */
+  private services: CommandServices | undefined;
 
   constructor(
     wasm: WasmBridge,
@@ -128,6 +136,7 @@ export class TableCellPropsDialog extends ModalDialog {
     tableCtx: { sec: number; ppi: number; ci: number },
     cellIdx: number,
     mode: 'table' | 'cell' = 'cell',
+    services?: CommandServices,
   ) {
     super('표/셀 속성', 480);
     this.wasm = wasm;
@@ -135,10 +144,12 @@ export class TableCellPropsDialog extends ModalDialog {
     this.tableCtx = tableCtx;
     this.cellIdx = cellIdx;
     this.mode = mode;
+    this.services = services;
   }
 
   show(): void {
     super.show();
+    this.dialog.classList.add('tcp-dialog');
     // 속성 조회
     const { sec, ppi, ci } = this.tableCtx;
     this.cellProps = this.wasm.getCellProperties(sec, ppi, ci, this.cellIdx);
@@ -148,6 +159,7 @@ export class TableCellPropsDialog extends ModalDialog {
 
   protected createBody(): HTMLElement {
     const body = document.createElement('div');
+    body.className = 'tcp-dialog-body';
 
     // 탭 정의: mode에 따라 테두리/배경 탭 포함 여부 결정
     const tabDefs: TabDef[] = [
@@ -167,6 +179,7 @@ export class TableCellPropsDialog extends ModalDialog {
     tabBar.className = 'dialog-tabs';
 
     const panelContainer = document.createElement('div');
+    panelContainer.className = 'tcp-panel-container';
 
     for (let i = 0; i < tabDefs.length; i++) {
       const def = tabDefs[i];
@@ -214,7 +227,6 @@ export class TableCellPropsDialog extends ModalDialog {
     const sizeSection = this.createSection('셀 크기');
     const sizeCheck = this.row();
     this.cellApplySizeCheck = this.checkbox('셀 크기 적용');
-    this.cellApplySizeCheck.checked = true;
     sizeCheck.appendChild(this.cellApplySizeCheck.parentElement!);
     sizeSection.appendChild(sizeCheck);
 
@@ -228,13 +240,13 @@ export class TableCellPropsDialog extends ModalDialog {
     sizeRow.appendChild(this.cellHeightInput);
     sizeRow.appendChild(this.unit('mm'));
     sizeSection.appendChild(sizeRow);
+    this.cellApplySizeCheck.addEventListener('change', () => this.updateCellSizeState());
     frag.appendChild(sizeSection);
 
     // 안 여백
     const padSection = this.createSection('안 여백');
     const padCheck = this.row();
     this.cellPaddingCheck = this.checkbox('안 여백 지정');
-    this.cellPaddingCheck.checked = true;
     padCheck.appendChild(this.cellPaddingCheck.parentElement!);
     padSection.appendChild(padCheck);
 
@@ -252,6 +264,7 @@ export class TableCellPropsDialog extends ModalDialog {
     padRow.appendChild(padGrid);
     padRow.appendChild(this.buildAllSpinner(this.cellPaddingInputs));
     padSection.appendChild(padRow);
+    this.cellPaddingCheck.addEventListener('change', () => this.updateCellPaddingState());
     frag.appendChild(padSection);
 
     // 속성
@@ -331,19 +344,16 @@ export class TableCellPropsDialog extends ModalDialog {
 
     // 필드
     const fieldSection = this.createSection('필드');
-    fieldSection.classList.add('disabled');
     const fieldRow = this.row();
     fieldRow.appendChild(this.label('필드 이름'));
     this.cellFieldNameInput = document.createElement('input');
     this.cellFieldNameInput.type = 'text';
     this.cellFieldNameInput.className = 'dialog-text-input';
-    this.cellFieldNameInput.disabled = true;
     fieldRow.appendChild(this.cellFieldNameInput);
     fieldSection.appendChild(fieldRow);
 
     const fieldRow2 = this.row();
     this.cellEditableCheck = this.checkbox('양식 모드에서 편집 가능');
-    this.cellEditableCheck.disabled = true;
     fieldRow2.appendChild(this.cellEditableCheck.parentElement!);
     fieldSection.appendChild(fieldRow2);
 
@@ -614,6 +624,19 @@ export class TableCellPropsDialog extends ModalDialog {
     this.posGroup.classList.toggle('disabled', disabled);
   }
 
+  private updateCellPaddingState(): void {
+    const enabled = this.cellPaddingCheck.checked;
+    for (const input of Object.values(this.cellPaddingInputs)) {
+      input.disabled = !enabled;
+    }
+  }
+
+  private updateCellSizeState(): void {
+    const enabled = this.cellApplySizeCheck.checked;
+    this.cellWidthInput.disabled = !enabled;
+    this.cellHeightInput.disabled = !enabled;
+  }
+
   private selectWrap(idx: number): void {
     this.wrapBtns.forEach((b, i) => b.classList.toggle('active', i === idx));
   }
@@ -674,7 +697,7 @@ export class TableCellPropsDialog extends ModalDialog {
       const btn = document.createElement('button');
       btn.type = 'button';
       btn.className = 'tcp-caption-item';
-      btn.innerHTML = pos.svg;
+      appendSvgMarkup(btn, pos.svg);
       btn.dataset.dir = String(pos.dir);
       btn.dataset.sub = String(pos.sub);
       btn.addEventListener('click', () => {
@@ -806,11 +829,11 @@ export class TableCellPropsDialog extends ModalDialog {
         const l1 = document.createElementNS('http://www.w3.org/2000/svg', 'line');
         l1.setAttribute('x1', '0'); l1.setAttribute('y1', '3');
         l1.setAttribute('x2', '48'); l1.setAttribute('y2', '3');
-        l1.setAttribute('stroke', '#333'); l1.setAttribute('stroke-width', '1');
+        l1.setAttribute('stroke', LINE_SAMPLE_STROKE); l1.setAttribute('stroke-width', '1');
         const l2 = document.createElementNS('http://www.w3.org/2000/svg', 'line');
         l2.setAttribute('x1', '0'); l2.setAttribute('y1', '7');
         l2.setAttribute('x2', '48'); l2.setAttribute('y2', '7');
-        l2.setAttribute('stroke', '#333'); l2.setAttribute('stroke-width', '1');
+        l2.setAttribute('stroke', LINE_SAMPLE_STROKE); l2.setAttribute('stroke-width', '1');
         svg.appendChild(l1); svg.appendChild(l2);
         item.appendChild(svg);
       } else {
@@ -819,7 +842,7 @@ export class TableCellPropsDialog extends ModalDialog {
         const line = document.createElementNS('http://www.w3.org/2000/svg', 'line');
         line.setAttribute('x1', '0'); line.setAttribute('y1', '5');
         line.setAttribute('x2', '48'); line.setAttribute('y2', '5');
-        line.setAttribute('stroke', '#333'); line.setAttribute('stroke-width', '1.5');
+        line.setAttribute('stroke', LINE_SAMPLE_STROKE); line.setAttribute('stroke-width', '1.5');
         if (def.dash) line.setAttribute('stroke-dasharray', def.dash);
         svg.appendChild(line);
         item.appendChild(svg);
@@ -993,20 +1016,20 @@ export class TableCellPropsDialog extends ModalDialog {
     const bg = document.createElementNS(ns, 'rect');
     bg.setAttribute('x', '0'); bg.setAttribute('y', '0');
     bg.setAttribute('width', '120'); bg.setAttribute('height', '100');
-    bg.setAttribute('fill', '#fff');
+    bg.style.setProperty('fill', DOC_PAPER_COLOR);
     svg.appendChild(bg);
 
     // 십자선 (셀 구분선) — 연한 회색 점선
     const cross1 = document.createElementNS(ns, 'line');
     cross1.setAttribute('x1', '60'); cross1.setAttribute('y1', '5');
     cross1.setAttribute('x2', '60'); cross1.setAttribute('y2', '95');
-    cross1.setAttribute('stroke', '#ccc'); cross1.setAttribute('stroke-width', '0.5');
+    cross1.style.setProperty('stroke', PREVIEW_GUIDE_STROKE); cross1.setAttribute('stroke-width', '0.5');
     cross1.setAttribute('stroke-dasharray', '3,2');
     svg.appendChild(cross1);
     const cross2 = document.createElementNS(ns, 'line');
     cross2.setAttribute('x1', '5'); cross2.setAttribute('y1', '50');
     cross2.setAttribute('x2', '115'); cross2.setAttribute('y2', '50');
-    cross2.setAttribute('stroke', '#ccc'); cross2.setAttribute('stroke-width', '0.5');
+    cross2.style.setProperty('stroke', PREVIEW_GUIDE_STROKE); cross2.setAttribute('stroke-width', '0.5');
     cross2.setAttribute('stroke-dasharray', '3,2');
     svg.appendChild(cross2);
 
@@ -1195,7 +1218,7 @@ export class TableCellPropsDialog extends ModalDialog {
   /** 배경 미리보기 갱신 (무늬 패턴 포함) */
   private updateBgPreview(): void {
     if (!this.bgColorRadio.checked) {
-      this.bgPreviewBox.style.background = '#ffffff';
+      this.bgPreviewBox.style.background = DOC_PAPER_COLOR;
       return;
     }
     const faceColor = this.bgColorPicker.value;
@@ -1226,14 +1249,19 @@ export class TableCellPropsDialog extends ModalDialog {
     // 셀 탭
     this.cellWidthInput.value = hwpunitToMm(cp.width).toFixed(1);
     this.cellHeightInput.value = hwpunitToMm(cp.height).toFixed(1);
+    this.updateCellSizeState();
     this.cellPaddingInputs['left'].value = hwp16ToMm(cp.paddingLeft).toFixed(1);
     this.cellPaddingInputs['right'].value = hwp16ToMm(cp.paddingRight).toFixed(1);
     this.cellPaddingInputs['top'].value = hwp16ToMm(cp.paddingTop).toFixed(1);
     this.cellPaddingInputs['bottom'].value = hwp16ToMm(cp.paddingBottom).toFixed(1);
+    this.cellPaddingCheck.checked = cp.applyInnerMargin ?? false;
+    this.updateCellPaddingState();
     this.setButtonGroupActive(this.cellVAlignBtns, cp.verticalAlign);
     this.setButtonGroupActive(this.cellTextDirBtns, cp.textDirection);
     this.cellHeaderCheck.checked = cp.isHeader;
     this.cellProtectCheck.checked = cp.cellProtect ?? false;
+    this.cellFieldNameInput.value = cp.fieldName ?? '';
+    this.cellEditableCheck.checked = cp.editableInForm ?? false;
 
     // 표 탭
     this.tablePageBreakSelect.value = String(tp.pageBreak ?? 0);
@@ -1247,12 +1275,12 @@ export class TableCellPropsDialog extends ModalDialog {
     if (tp.tableWidth != null) {
       this.basicWidthInput.value = hwpunitToMm(tp.tableWidth).toFixed(1);
       this.basicWidthInput.readOnly = true;
-      this.basicWidthInput.style.background = '#f5f5f5';
+      this.basicWidthInput.style.removeProperty('background');
     }
     if (tp.tableHeight != null) {
       this.basicHeightInput.value = hwpunitToMm(tp.tableHeight).toFixed(1);
       this.basicHeightInput.readOnly = true;
-      this.basicHeightInput.style.background = '#f5f5f5';
+      this.basicHeightInput.style.removeProperty('background');
     }
     this.treatAsCharCheck.checked = tp.treatAsChar ?? true;
     this.selectWrap(this.wrapValues.indexOf(tp.textWrap ?? 'Square'));
@@ -1317,6 +1345,7 @@ export class TableCellPropsDialog extends ModalDialog {
       newCellProps.width = mmToHwpunit(parseFloat(this.cellWidthInput.value) || 0);
       newCellProps.height = mmToHwpunit(parseFloat(this.cellHeightInput.value) || 0);
     }
+    newCellProps.applyInnerMargin = this.cellPaddingCheck.checked;
     if (this.cellPaddingCheck.checked) {
       newCellProps.paddingLeft = mmToHwp16(parseFloat(this.cellPaddingInputs['left'].value) || 0);
       newCellProps.paddingRight = mmToHwp16(parseFloat(this.cellPaddingInputs['right'].value) || 0);
@@ -1329,6 +1358,8 @@ export class TableCellPropsDialog extends ModalDialog {
     if (activeTextDir >= 0) newCellProps.textDirection = activeTextDir;
     newCellProps.isHeader = this.cellHeaderCheck.checked;
     newCellProps.cellProtect = this.cellProtectCheck.checked;
+    newCellProps.fieldName = this.cellFieldNameInput.value;
+    newCellProps.editableInForm = this.cellEditableCheck.checked;
 
     // 셀 테두리/배경 (cell 모드에서는 테두리/배경 탭이 없으므로 스킵)
     if (this.mode === 'table' && this.borderTarget === 'cell' && this.borderEdits) {
@@ -1347,8 +1378,6 @@ export class TableCellPropsDialog extends ModalDialog {
         newCellProps.fillType = 'none';
       }
     }
-
-    this.wasm.setCellProperties(sec, ppi, ci, this.cellIdx, newCellProps as Partial<CellProperties>);
 
     // 표 속성 수정
     const pbValue = parseInt(this.tablePageBreakSelect.value, 10);
@@ -1408,9 +1437,27 @@ export class TableCellPropsDialog extends ModalDialog {
       }
     }
 
-    this.wasm.setTableProperties(sec, ppi, ci, newTableProps as Partial<TableProperties>);
-
-    this.eventBus.emit('document-changed');
+    const applyProps = () => {
+      this.wasm.setCellProperties(sec, ppi, ci, this.cellIdx, newCellProps as Partial<CellProperties>);
+      this.wasm.setTableProperties(sec, ppi, ci, newTableProps as Partial<TableProperties>);
+    };
+    // 표/셀 속성 변경도 undo 대상이다 — 편집 라우터를 통과시켜 스냅샷으로
+    // 기록한다 (#1320 계약, picture-props-dialog(#2027)와 동일 패턴).
+    // services 미주입 환경에서만 직접 적용 fallback.
+    const ih = this.services?.getInputHandler();
+    if (ih) {
+      ih.executeOperation({
+        kind: 'snapshot',
+        operationType: 'objectProps',
+        operation: () => {
+          applyProps();
+          return ih.getCursorPosition();
+        },
+      });
+    } else {
+      applyProps();
+      this.eventBus.emit('document-changed');
+    }
   }
 
   // ─── "모두(A)" 일괄 여백 스피너 ─────────────────────

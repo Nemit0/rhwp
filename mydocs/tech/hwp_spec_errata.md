@@ -1,6 +1,13 @@
+---
+kind: canonical
+status: active
+canonical: mydocs/tech/hwp_spec_errata.md
+last_verified: 2026-07-16
+---
+
 # HWP 5.0 스펙 문서 정오표
 
-공식 스펙 문서([hwp_spec_5.0.md](hwp_spec_5.0.md))와 실제 바이너리 구현 간 불일치 사항을 기록한다.
+프로젝트가 보존한 [한글 문서 파일 형식 5.0 개정 1.3](한글문서파일형식_5.0_revision1.3.md)와 실제 바이너리 구현 간 불일치 사항을 기록한다.
 각 항목은 역공학 검증을 통해 확인된 것이며, 본 프로젝트의 파서/렌더러는 실제 바이너리 기준으로 구현한다.
 
 > **새 기능 구현 전 반드시 본 문서를 확인할 것.** 스펙을 그대로 따르면 파일 손상이 발생할 수 있다.
@@ -38,9 +45,9 @@
 | 항목 | 내용 |
 |------|------|
 | 스펙 위치 | 표 67 (문단 리스트 헤더) |
-| 스펙 기술 | UINT32 속성 필드에서 bit 0~2=텍스트 방향, bit 3~4=줄바꿈, bit 5~6=세로 정렬 |
-| 실제 구현 | 비트 위치가 **상위 16비트**에 존재: bit 16~18=텍스트 방향, bit 19~20=줄바꿈, bit 21~22=세로 정렬 |
-| 검증 방법 | `list_attr=0x00200000` (bit 21 설정) → 세로정렬=Center(1). 스펙대로 bit 5~6을 읽으면 항상 0(Top)이 됨 |
+| 스펙 기술 | UINT32 속성 필드에서 bit 0\~2=텍스트 방향, bit 3\~4=줄바꿈, bit 5\~6=세로 정렬 |
+| 실제 구현 | 비트 위치가 **상위 16비트**에 존재: bit 16\~18=텍스트 방향, bit 19\~20=줄바꿈, bit 21\~22=세로 정렬 |
+| 검증 방법 | `list_attr=0x00200000` (bit 21 설정) → 세로정렬=Center(1). 스펙대로 bit 5\~6을 읽으면 항상 0(Top)이 됨 |
 | 추출 공식 | `text_direction = (list_attr >> 16) & 0x07`, `vertical_align = (list_attr >> 21) & 0x03` |
 | 수정 파일 | `src/parser/control.rs` |
 | 발견일 | 2026-02-06 |
@@ -155,6 +162,16 @@
 | 참조 문서 | `troubleshootings/repeat_header_image_duplication.md` |
 | 발견일 | 2026-02-10 |
 
+**추가 조사 (2026-07-03, #1831)**: bytes 6-7 의 **상위 바이트(b7)** 에도 하위 바이트와
+동형의 비트 패턴(0x01/0x04/0x05 — 안여백/제목셀 유사)이 코퍼스에 대량 존재한다
+(452 통제셋 .hwp 에서 b7≠0 셀 5,639개 vs b6 의 제목셀 비트 103개, 한 셀에 양쪽
+공존도 흔함). **인과 플립 실험 결과 한글 2022 는 b7 비트를 렌더링·UI(COM Header/
+HasMargin) 모두에서 무시**하며, 재저장 시 원값 그대로 보존 재기록한다
+(2448877=`samples/float-stack-defer.hwp` 실험, 패처 `tools/patch_cell_flags.py`).
+결론: b7 은 레이아웃 불활성
+보존 데이터 — is_header 추출은 현행 b6(bit 2) 기준이 옳고, rhwp 는
+`list_header_width_ref` u16 원값 보존으로 라운드트립 요건을 이미 충족한다.
+
 ---
 
 ## 11. 단 정의(ColumnDef) 너비/간격 — 비례값 인코딩
@@ -180,8 +197,8 @@
 |------|------|
 | 스펙 위치 | 표 149 (쪽 번호 위치) → "속성(표 148 참조)" |
 | 스펙 오류 | 표 148은 "홀/짝수 조정"(bit 0~1만 정의). **올바른 참조는 표 150** |
-| 표 150 내용 | bit 0~7: 번호 모양(format), bit 8~11: 표시 위치(position) |
-| 실제 영향 | 표 148을 참조하면 bit 0~3만 사용 → position을 bit 4~7로 오해 → position=0(없음)으로 잘못 판독 |
+| 표 150 내용 | bit 0\~7: 번호 모양(format), bit 8\~11: 표시 위치(position) |
+| 실제 영향 | 표 148을 참조하면 bit 0\~3만 사용 → position을 bit 4\~7로 오해 → position=0(없음)으로 잘못 판독 |
 | 검증 데이터 | attr=0x00000500: 올바른 format=(0x500&0xFF)=0, position=(0x500>>8)&0x0F=**5**(가운데 아래) |
 | 섹션 제목 불일치 | "글자 겹침" 섹션에 쪽 번호 속성(표 150)이 위치 — 표 번호가 2~3개 밀려 있음 |
 | 수정 파일 | `src/parser/control.rs` |
@@ -209,7 +226,7 @@
 | 항목 | 내용 |
 |------|------|
 | 스펙 위치 | 표 72 (공통 객체 속성) |
-| 스펙 기술 | bit 15~17: 오브젝트 폭 기준 (0=paper, 1=page, 2=column, 3=para, 4=absolute), bit 18~19: 높이 기준 (0=paper, 1=page, 2=absolute) |
+| 스펙 기술 | bit 15\~17: 오브젝트 폭 기준 (0=paper, 1=page, 2=column, 3=para, 4=absolute), bit 18\~19: 높이 기준 (0=paper, 1=page, 2=absolute) |
 | 실제 해석 | 미설정(=0=paper)이면 한컴은 width/height를 **종이 대비 퍼센트**로 해석. 예: 42520 HU → 425.20% |
 | 올바른 설정 | 그림 삽입 시 `(4 << 15) \| (2 << 18)` = width=absolute, height=absolute 명시 필요 |
 | 수정 파일 | `src/wasm_api.rs` |
@@ -241,6 +258,7 @@
 | 실제 의미 | **doc_info의 BinData 레코드 순번 (1-indexed)**. storage_id(CFB 파일명 번호)와는 별개 |
 | 혼동 원인 | 대부분의 HWP 파일에서 storage_id가 1부터 순차 할당되어 순번과 우연히 일치 |
 | 올바른 접근 | `bin_data_content[(bin_data_id - 1) as usize]` — 배열 인덱스로 접근 |
+| native bridge API | `ImageNode.bin_data_id`는 1-based 참조값이고, `DocumentCore::get_bin_data(index)`의 `index`는 0-based `bin_data_content` 배열 인덱스다. 따라서 render tree의 `bin_data_id`로 조회할 때는 보통 `get_bin_data((bin_data_id - 1) as usize)`를 호출한다. |
 | 위반 시 결과 | storage_id가 비순차인 파일(예: Worldcup_FIFA2010_32.hwp)에서 잘못된 이미지 매핑 |
 | 수정 파일 | `src/renderer/layout.rs` (6곳), `src/wasm_api.rs` (1곳) |
 | 참조 문서 | `troubleshootings/bin_data_id_index_mapping.md` |
@@ -452,6 +470,23 @@ id=4 level=1 → counter[1]=2 → "2."    (앞 번호 이어: 같은 id)
 
 InFrontOfText(글앞으로, text_wrap=3) / BehindText(글뒤로, text_wrap=2) 표는 **공간을 차지하지 않는 플로팅 개체**이다.
 
+### CommonObjAttr text wrap 비트 실측 정정
+
+`CTRL_HEADER`의 CommonObjAttr `bit 21..23`은 한컴/HWP5 실측과 PR #1015 `samples/test-image.hwp`/`samples/test-image.hwpx` fixture 기준으로 다음처럼 파싱한다.
+
+| bits | rhwp IR | 한컴 UI 진단 라벨 |
+|------|----|--------------|
+| 0 | `Square` | 어울림 |
+| 1 | `TopAndBottom` | 자리차지 |
+| 2 | `BehindText` | 글뒤로 |
+| 3 | `InFrontOfText` | 글앞으로 |
+
+기존 스펙 표처럼 `1=Tight`, `2=Through`, `3=TopAndBottom`, `4=BehindText`, `5=InFrontOfText`로 읽으면 HWP5 원본의 저장값과 맞지 않는다. `test-image.hwp`는 각 배치 방식을 별도 페이지/문단의 단일 그림으로 저장한 fixture이며, control record 순서와 문단 라벨 순서는 `TopAndBottom(자리차지) → Square(어울림) → InFrontOfText(글앞으로) → BehindText(글뒤로)`이다.
+
+같은 fixture의 `글자처럼 취급` 그림은 `treat_as_char=true`이고, wrap bits/HWPX `textWrap` 값은 `BehindText`로 남아 있다. 이 경우 사용자 UI의 핵심 속성은 wrap 라벨이 아니라 **글자처럼 취급** 플래그이므로, 진단기는 `배치: 글뒤로, 글자처럼=true`처럼 raw wrap과 TAC 플래그를 함께 표시해야 한다. HWPX의 `TIGHT`/`THROUGH`는 별도 XML 값으로 보존될 수 있으나, HWP5 CommonObjAttr 저장/파싱에서는 현재 `Square` 계열로 축약한다.
+
+한컴 도움말의 “본문과의 배치” 설명 기준으로 `어울림`은 개체와 본문이 같은 줄을 나누어 쓰되 서로 자리를 침범하지 않도록 배치하는 의미이며, `자리 차지`와 별도 의미다. 따라서 HWP5 `Square/어울림` 그림은 `LINE_SEG`가 저장한 좁은 줄폭과 첫 wrap 줄의 `vertical_pos`를 함께 따라야 하고, `TopAndBottom/자리차지`로 강제 변환하지 않는다.
+
 - **Pagination**: Shape처럼 `PageItem::Shape`로 수집 (높이 차지 없음)
 - **Layout**: shapes pass에서 `layout_table` 호출하여 paper 기준 절대 좌표에 렌더링
 
@@ -498,6 +533,291 @@ InFrontOfText(글앞으로, text_wrap=3) / BehindText(글뒤로, text_wrap=2) �
 | 대응 | 헤더 offset 48의 dirStartSector에서 출발하여 FAT 체인(`0xFFFFFFFE` 종료)을 따라 모든 디렉토리 섹터 순회 |
 | 수정 파일 | `rhwp-chrome/sw/thumbnail-extractor.js` (`extractPrvImage()` 함수) |
 | 발견일 | 2026-04-12 |
+
+---
+
+## 29. SectionDef.flags — hide_master_page 비트 위치
+
+| 항목 | 내용 |
+|------|------|
+| 스펙 위치 | 표 142 (구역 정의 속성), HWP5 스펙 §4.2.10.1 |
+| 스펙 기술 | 구역정의 속성 비트 필드 |
+| 실제 비트 | **bit 2 (0x0004) = "바탕쪽 감춤(첫쪽)"** |
+| 잘못된 구현 | 기존 코드는 bit 10 (0x0400) 으로 읽음 → 항상 `hide_master_page=false` |
+| 위반 시 결과 | flags bit 2 가 SET 된 문서의 첫쪽에 바탕쪽이 본문 표 header 와 중복 렌더되어 텍스트가 두 번 그려지고, 좌측 바탕쪽 글상자가 우측 단(column) 본문을 가림 |
+| 검증 데이터 | 21_언어_기출_편집가능본.hwp(`flags=0xC0080004`), exam_kor.hwp(`0xC0000004`), exam_eng.hwp(`0xC0000004`) — bit 2 SET ✓ / exam_math.hwp(`0x20000000`) — bit 2 unset, 영향 없음 |
+| 추출 공식 | `hide_master_page = (sd.flags & 0x0004) != 0;` |
+| 잠재 위험 | 다른 hide 비트들 (header/footer/border/fill/page_num) 도 오프셋 어긋남 가능성. 별도 이슈 후보 |
+| 수정 파일 | `src/parser/body_text.rs:549` (읽기), `src/document_core/queries/rendering.rs:166` (쓰기) |
+| 참조 문서 | `troubleshootings/master_page_hide_first_page.md` (예정) — Task #304/PR #305 |
+| 기여자 | [@planet6897](https://github.com/planet6897) (Jaeuk Ryu) — 발견·수정·검증 |
+| 발견일 | 2026-04-25 |
+
+---
+
+## 30. TabDef.position (표 7) — 데이터 좌표일 뿐, 한컴 조판 알고리즘은 비공개
+
+**스펙은 "데이터 포맷" 만 정의 — 한컴은 그 값을 시멘틱적으로 재해석한다.**
+
+| 항목 | 내용 |
+|------|------|
+| 스펙 위치 | 표 7 (TabDef), HWP5 스펙 §4.2.7 |
+| 스펙 기술 | TabDef.tabs[].position (UINT32, HWPUNIT) — 탭 정지 위치 |
+| 실제 동작 | 한컴은 `position` 을 절대 좌표로 신뢰하지 않고, **리더 도트 (`fill_type ≠ 0`) + RIGHT 탭 (`tab_type=1`)** 인 경우 "이 줄 우측 끝까지 채움" 으로 시멘틱 재해석. 셀 안 paragraph 에서는 cell padding_right 영역 침범 금지. 들여쓰기 문단도 페이지번호 right edge 가 동일 위치에 정렬. |
+| 잘못된 구현 | TabDef.position 그대로 사용 시: ① 셀 padding_right 영역 침범, ② 들여쓰기 문단 (소제목) 페이지번호가 좌측으로 어긋남, ③ 한 자리/두 자리 페이지번호 무관 leader 끝이 같은 x 라 페이지번호와 leader 겹침. |
+| 위반 시 결과 | KTX.hwp 목차에서 장제목·소제목 페이지번호 정렬 어긋남, leader 가 페이지번호 안으로 침범, 페이지번호가 셀 padding 영역까지 침범. |
+| 검증 데이터 | KTX.hwp 목차 (셀[10] 안 paragraph, ps_id=109 장제목 / ps_id=111 소제목, tab_def_id=5 RIGHT + fill=점선) |
+| 해결 방향 | 리더 (`fill_type ≠ 0`) RIGHT 탭은 `effective_pos = effective_margin_left + available_width` (cell inner 우측 끝) 로 강제. 페이지번호 폭에 따라 leader.end_x 단축. 공백 only run 은 carry-over. |
+| 수정 파일 | `src/renderer/layout/paragraph_layout.rs::resolve_last_tab_pending` + cross-run RIGHT take 분기 |
+| 참조 문서 | `troubleshootings/toc_leader_right_tab_alignment.md` — Task #279, PR #282 |
+| 기여자 | [@seanshin](https://github.com/seanshin) (Shin hyoun mouk) — 발견·구현 (`tab_type != 1` 클램핑 제외 + dasharray round cap), 메인테이너 — 6가지 추가 결함 식별 및 보강 |
+| 발견일 | 2026-04-25 |
+
+**핵심 교훈**: HWP 스펙은 **데이터 포맷 스펙이지 조판 알고리즘 스펙이 아니다**. 스펙대로 처리해도 한컴과 다른 결과가 나오면 한컴 시각 결과를 정답으로 삼아 의도를 역공학해야 한다. rhwp 는 "스펙 충실 구현체" 가 아니라 **"한컴 조판 결과를 재현하는 엔진"** 이어야 한다.
+
+---
+
+## 31. PAGE_BORDER_FILL 위치 기준 — HWP3 보정과 HWP5/HWPX 계약을 혼합하면 회귀 발생
+
+| 항목 | 내용 |
+|------|------|
+| 스펙 위치 | 표 136 (쪽 테두리/배경 속성), `HWPTAG_PAGE_BORDER_FILL.attr bit 0` |
+| 스펙 기술 | bit 0 `0=본문 기준`, `1=종이 기준` |
+| OWPML 대응 | `hp:pageBorderFill@textBorder`: `CONTENT=본문 기준`, `PAPER=종이 기준` |
+| 한컴 UI 관찰 | 한컴 에디터 UI에서는 HWP5/HWPX export 파일의 쪽 테두리 기준이 "쪽 기준"으로 표시될 수 있음. 이 UI 용어는 `CommonObjAttr::Page`와 같은 일반 개체 위치 기준이 아니며, `PAGE_BORDER_FILL`의 위치 기준 문맥에서 별도로 해석해야 한다. |
+| 회귀 이력 | PR #956(`@jangster77`)은 HWP5/HWPX 다수 샘플 실측을 근거로 page border outline을 paper-based로 강제해 #952 회귀를 수정했다. 이후 Task #987에서 HWP3 sample16의 body 기준 정합을 맞추며 공통 렌더러가 다시 `attr bit0`을 존중하도록 바뀌었고, 이 과정에서 PR #956 계열 정합이 회귀될 위험이 생겼다. |
+| 실제 문제 | HWP3 전용 보정과 HWP5/HWPX의 `PAGE_BORDER_FILL` 렌더링 계약을 하나의 `paper_based = (attr & 0x01) != 0` 로 처리하면 어느 한쪽이 깨진다. |
+| 구현 원칙 | HWP3 parser가 필요한 호환성 힌트를 만들더라도, HWP5/HWPX page border 렌더링 계약과 섞지 않는다. `PageBorderFill`에 포맷 출처 또는 명시적 기준 enum을 추가해 HWP3 body 기준 보정과 HWP5/HWPX paper-based 렌더링을 분리해야 한다. |
+| 주의 사항 | `PAGE_BORDER_FILL`의 "쪽/종이/본문" 용어와 `CommonObjAttr`의 `Paper/Page/Para/Column` 기준은 같은 이름을 쓰더라도 같은 계층의 계약이 아니다. 특히 한컴 UI의 "쪽 기준" 표시를 `CommonObjAttr::Page`로 단순 매핑하면 안 된다. |
+| 관련 코드 | `src/renderer/layout.rs::build_page_borders`, `src/renderer/layout.rs::page_number_baseline_y`, `src/parser/hwp3/mod.rs` |
+| 관련 문서 | `mydocs/pr/archives/pr_956_review.md`, `mydocs/report/task_m100_987_report.md`, `mydocs/working/task_m100_987_stage2.md` |
+| 발견일 | 2026-05-19 |
+
+### 권장 구조
+
+현재 `PageBorderFill`은 `attr` raw 값만 보존하므로, 렌더러가 포맷별 의미 차이를 판단하기 어렵다.
+다음과 같이 명시적인 계약 계층을 추가하는 방향이 안전하다.
+
+```text
+PageBorderFillBasis:
+  - Hwp5HwpxPaperOutline
+  - Hwp3BodyOutline
+  - RawAttrFallback
+```
+
+또는 같은 의미를 담는 별도 hint 필드를 두어도 된다. 핵심은 HWP3 sample16을 위해 도입한 body 기준
+보정이 HWP5/HWPX page border의 paper-based 정합을 다시 깨지 않도록 하는 것이다.
+
+---
+
+## EQEDIT (HWPTAG_EQEDIT) — `baseline` 과 `version_info` 사이 UINT2 zero 필드 누락
+
+### 스펙 문제
+
+`mydocs/tech/한글문서파일형식_5.0_revision1.3.md` 의 표 105 (수식 개체 속성) 가
+EQEDIT record 의 byte order 를 다음과 같이 정의:
+
+| 자료형 | 길이 | 설명 |
+|--------|------|------|
+| UINT32 | 4 | 속성 (스크립트 범위) |
+| WORD | 2 | 스크립트 길이 |
+| WCHAR array | 2×len | 글 수식 스크립트 |
+| HWPUNIT | 4 | 수식 글자 크기 |
+| COLORREF | 4 | 글자 색상 |
+| INT16 | 2 | base line |
+| WCHAR array | 2×len | 수식 버전 정보 |
+| WCHAR array | 2×len | 수식 폰트 이름 |
+
+→ baseline (INT16) 직후 바로 version_info 의 length 필드 (WORD) 가 오는 구조.
+
+### 실제 데이터
+
+`samples/math-001.hwp` 의 EQEDIT raw payload 분석:
+
+```
+0058: 4C 04 00 00       letter_size = 1100
+      00 00 00 00       color = 0
+      5D 00             baseLine = 93
+      00 00             ← 스펙 표 105 누락! (UINT16 zero)
+      13 00             version_info length = 19
+      [Equation Version 60]
+      07 00             font_name length = 7
+      [HYhwpEQ]
+```
+
+baseline 과 version_info length 사이에 **UINT16 zero (2 byte)** 가 위치.
+
+### hwplib 정합
+
+```java
+// hwplib/src/main/java/kr/dogfoot/hwplib/reader/bodytext/paragraph/control/eqed/ForEQEdit.java
+eqEdit.setBaseLine(sr.readSInt2());
+eqEdit.setUnknown(sr.readUInt2());        // ← 스펙 누락 영역
+eqEdit.getVersionInfo().setBytes(sr.readHWPString());
+eqEdit.getFontName().setBytes(sr.readHWPString());
+```
+
+hwplib 가 spec 누락 영역을 `unknown` UINT2 로 정확 처리. write 측도 동일 (`writeUInt2`).
+
+### 누락 시 증상
+
+UINT2 zero 를 read 하지 않으면 `[00 00]` 이 version_info length 로 오인되어:
+- 첫 string = "" (length 0)
+- 둘째 string = "Equation Version 60" (그 다음 `[13 00]` 을 length 19 로 읽음)
+
+→ (version_info, font_name) 자리값 **swap**. 한컴이 잘못된 byte align 으로 후속
+record (PARA_TEXT 등) 를 읽어 **본문 텍스트 미표시** (수식만 보임).
+
+### 정정 (Task #1061)
+
+- `src/model/control.rs::Equation` 에 `unknown: u16` 필드 추가
+- `src/parser/control.rs::parse_equation_control` — baseline 후 `read_u16()` 추가
+- `src/serializer/control.rs::serialize_equation_control` — baseline 후 `write_u16(eq.unknown)` 추가
+
+### 관련 commits
+
+Task #1061 (2026-05-22).
+
+### 메모리 룰
+
+- `feedback_diagnosis_layer_attribution` — EQEDIT raw byte 직접 분석으로 본질 정확 식별
+- `reference_hwp2hwpx_library` — hwplib 권위 자료가 spec errata 의 결정적 근거
+
+---
+
+## 31. CommonObjAttr bit 13 — 한컴 UI `쪽 영역 안으로 제한`과 HWPX `flowWithText`
+
+### 현상
+
+한컴 개체 속성 대화상자의 `쪽 영역 안으로 제한` 체크박스는 HWP5 스펙 표 70의
+CommonObjAttr `bit 13`에 대응한다. HWPX에서는 같은 값이 `<hp:pos flowWithText="1|0">`
+속성으로 저장된다.
+
+### 기준 샘플
+
+- `samples/ta-pic-001-r-쪽영역안제한.hwp(x)`: 첫 번째 그림 `flowWithText=true`
+- `samples/ta-pic-001-r-쪽영역안제한no.hwp(x)`: 첫 번째 그림 `flowWithText=false`
+
+HWP5 `hwp5-anchor-trace` 결과도 첫 번째 그림 `CTRL_HEADER`에서 각각
+`properties=0x002a2210`(bit 13 on), `properties=0x002a0210`(bit 13 off)로 갈린다.
+
+### 정정
+
+- `flowWithText`라는 HWPX 이름은 한컴 UI 의미와 직관적으로 맞지 않는다.
+- rhwp 내부 IR은 `CommonObjAttr::flow_with_text`로 저장하되, 사용자-facing JSON/UI에서는
+  한컴 UI 명칭에 맞춰 `restrictInPage`로 노출해야 한다.
+- 이 값이 켜지면 한컴 UI에서 `서로 겹침 허용`은 비활성/false 취급된다.
+- HWPX picture serializer는 `flowWithText`를 고정값으로 쓰지 말고 `CommonObjAttr::flow_with_text`
+  값을 그대로 직렬화해야 한다.
+- 렌더링 의미는 한컴 도움말의 `쪽 영역 안으로 제한` 설명을 따른다. 세로 위치 기준이
+  `문단`인 개체가 편집 가능한 쪽 영역의 위/아래 끝을 벗어나면 개체를 다음 쪽으로 넘겨야
+  하며, 표 셀 내부의 자리 차지 그림도 이 값이 켜져 있을 때만 개체의 세로 오프셋과 높이를
+  행/셀 높이 흐름에 반영한다.
+
+---
+
+## 32. ParaShape attr1 bit 28/29 — HWPX `hh:border connect/ignoreMargin`
+
+### 현상
+
+한컴 문단 모양 대화상자의 `문단 테두리 연결`은 두 개 이상의 연속 문단을 하나의
+문단 테두리로 연결하는 설정이다. HWP5에서는 `HWPTAG_PARA_SHAPE` 속성1의 bit 28에
+저장되고, `문단 여백 무시`는 bit 29에 저장된다.
+
+HWPX에서는 같은 값이 `<hh:paraPr>` 아래 `<hh:border>`의 `connect="1|0"` 및
+`ignoreMargin="1|0"` 속성으로 저장된다.
+
+### 기준 샘플
+
+- `samples/[2027] 온새미로 1 본교재.hwp(x)` 6쪽 지문 박스 문단
+- HWPX 원본 `paraPr`의 `<hh:border connect="1" ignoreMargin="1">`
+- HWP5/HWPX 파싱 후 ParaShape `attr1` bit 28/29 on
+
+### 정정
+
+- Studio 문단 모양 속성 JSON은 `borderConnect`, `borderIgnoreMargin`을 노출해야 한다.
+- 문단 모양 수정 명령은 위 값을 ParaShape attr1 bit 28/29에 반영해야 한다.
+- HWPX serializer는 `connect`/`ignoreMargin`을 고정 `0`으로 쓰지 말고 ParaShape attr1
+  bit 28/29에서 출력해야 한다.
+
+---
+
+## 33. HWPX `breakNonLatinWord` — 열거명 설명과 한컴 실동작 반전
+
+### 현상
+
+문단 모양의 한글 줄 나눔 단위는 HWP5 `ParaShape.attr1` bit 7에 저장된다. HWP5 스펙의
+계약은 `0=어절`, `1=글자`이며, 이 값은 한컴 실동작과 일치한다.
+
+반면 HWPX/OWPML의 `breakNonLatinWord` 열거명은 직관적으로 `KEEP_WORD=어절`,
+`BREAK_WORD=글자`처럼 보이지만, 한컴 202x 계열의 실제 import/export와 rhwp 통제
+실측에서는 반대로 매핑된다.
+
+### 기준 샘플
+
+- `samples/issue1949_giant_cell_nested_tables_perf.hwp`
+- `samples/issue1949_giant_cell_nested_tables_perf.hwpx`
+- PR #2194 / issue #2185 통합 회귀
+
+### 정정
+
+- renderer 내부 계약은 HWP5 bit 7과 동일하게 `0=어절`, `1=글자`로 소비한다.
+- HWPX parser/serializer는 한컴 호환성을 기준으로 `KEEP_WORD -> bit7=1`,
+  `BREAK_WORD -> bit7=0` 매핑을 유지한다.
+- HWPX 열거명만 보고 renderer의 `korean_break_unit` 의미를 뒤집으면 첫 편집 후
+  `LINE_SEG.text_start`, 다음 문단 `vpos`, pagination이 한컴 기준과 달라진다.
+- 따라서 HWPX 명칭, HWP5 저장 bit, renderer 내부 의미를 한 계층으로 섞지 않는다.
+
+### 검증
+
+- PR #2194 focused test:
+  `cargo test --profile release-test --test issue_2185_korean_break_unit -- --nocapture`
+- HWP/HWPX 양쪽에서 실제 편집, pagination flush, 원본 형식 저장, 재로드까지 수행한다.
+- 기대값: 입력 문단 `LINE_SEG.text_start=[0, 44, 84, 122]`, 다음 문단 `vpos=17160`,
+  전체 페이지 수 115쪽 유지.
+
+## 34. CharShape attr bit 18~20 취소선 여부 — 비트만으로 판정 불가 (모양이 실판별자)
+
+### 스펙 기술 (4.2.5 글자 모양, 표 33 속성)
+
+- `bit 18~20`: "취소선 여부" — 0/비0 로 유무를 나타내는 것처럼 기술.
+- `bit 26~29`: "취소선 모양 (표 25 참조)" — 테두리선 종류.
+
+### 실제 동작 (PR #2258, yeonic 실증)
+
+한컴은 **취소선이 없는 문자에도 bit 18~20 에 1 을 기본값으로 기록**한다.
+따라서 비트만으로는 취소선 유무를 판정할 수 없고, 실판별자는 취소선
+모양(bit 26~29)이다:
+
+- 취소선 없음: 모양에 표 25 의 **3D 계열 placeholder** (실측 15 = "3D 단선",
+  13 = "두꺼운 3D" 등)가 들어온다.
+- 실제 취소선: 모양이 **선 종류 0~12** (실선~물결 2중선 13종 — HWPX
+  `SOLID`~`DOUBLE_WAVE` 와 1:1).
+
+HWPX 는 같은 현상을 `strikeout shape="3D"` placeholder 로 드러내며, PR #154
+에서 이름 화이트리스트(`is_real_strike_shape`)로 해소된 것과 동일 구조다.
+
+### 기준 샘플
+
+- `samples/issue1949_giant_cell_nested_tables_perf.hwp` — 취소선 없는
+  CharShape 다수가 bits=1 + 모양 15, 실제 취소선 4개는 모양 0(SOLID)·7(DOUBLE_SLIM)
+- 같은 문서 `.hwpx` 쌍과 자기정합 (111쪽 "843℃" 뒤 취소 문자)
+- 비공개 실무 문서 189건 집계(작성자 제공, 참고): bits!=0 만 쓰면 3개 문서
+  300 runs 오탐, 모양 화이트리스트 적용 시 4개 문서 76 runs 정탐
+
+### 정정
+
+- 취소선 판정: `bits != 0 && strike_shape <= 12` (fail-closed — 미지 모양은
+  no-strike). `strikethrough_bits > 1` 휴리스틱(구현 이력)은 실제 취소선
+  (bits=1)도 버리므로 오답.
+- 스펙의 "취소선 여부" 서술은 placeholder 기본값 관행을 누락 — 비트 단독
+  해석 금지.
+
+### 검증
+
+- `cargo test --profile release-test --test hwp5_strikeout_shape_parity`
+  (HWP5↔HWPX 자기정합, 수정 전 실패)
+- `parse_char_shape` 유닛: bits 0/1/3 × 모양 0/1/12/13/15 경계 전수
 
 ---
 
